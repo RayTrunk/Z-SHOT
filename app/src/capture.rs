@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use image::{Rgba, RgbaImage};
 
 /// Captures the primary desktop monitor on Windows using Win32 GDI.

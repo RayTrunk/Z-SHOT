@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use eframe::egui::{Color32, Pos2, Rect, TextureHandle};
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};

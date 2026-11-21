@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! User settings: global hotkeys, what happens after a capture, save folder, autostart.
 //! Persisted as `settings.json` next to the album in `%LOCALAPPDATA%\Z-SHOT`.
 

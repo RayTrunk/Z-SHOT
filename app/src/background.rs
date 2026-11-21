@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Background thread: system-tray icon, global hotkeys and hotkey recording.
 //!
 //! The thread runs a Win32 message loop on a hidden window. The egui app talks to it

@@ -1314,20 +1314,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "z-shot"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "chrono",
- "eframe",
- "image",
- "rfd",
- "serde",
- "serde_json",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3159,6 +3145,20 @@ dependencies = [
  "quote",
  "syn 3.0.10",
  "synstructure",
+]
+
+[[package]]
+name = "z-shot"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "eframe",
+ "image",
+ "rfd",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

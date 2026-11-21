@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod background;
@@ -47,6 +50,7 @@ enum AppMode {
 struct CliArgs {
     screenshot_path: Option<PathBuf>,
     self_test_path: Option<PathBuf>,
+    open_settings: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -59,6 +63,7 @@ fn parse_args() -> CliArgs {
                     cli.screenshot_path = Some(PathBuf::from(p));
                 }
             }
+            "--settings" => cli.open_settings = true,
             "--self-test" => {
                 if let Some(p) = args.next() {
                     cli.self_test_path = Some(PathBuf::from(p));
@@ -378,7 +383,11 @@ struct ZShotApp {
 }
 
 impl ZShotApp {
-    fn new(cc: &eframe::CreationContext<'_>, screenshot_target: Option<PathBuf>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        screenshot_target: Option<PathBuf>,
+        open_settings: bool,
+    ) -> Self {
         configure_fonts(&cc.egui_ctx);
         let dark_mode = true;
         apply_theme(&cc.egui_ctx, dark_mode);
@@ -461,7 +470,7 @@ impl ZShotApp {
             screenshot_requested: false,
             settings,
             settings_path,
-            show_settings: false,
+            show_settings: open_settings,
             recording: None,
             hotkey_status: Vec::new(),
             autostart: settings::autostart_enabled(),
@@ -1733,8 +1742,14 @@ impl ZShotApp {
                                     None => RichText::new("Nicht belegt").weak(),
                                 }
                             };
+                            let border = if is_recording {
+                                Color32::from_rgb(245, 158, 11)
+                            } else {
+                                ui.visuals().widgets.inactive.fg_stroke.color.gamma_multiply(0.45)
+                            };
                             let btn = egui::Button::new(text)
-                                .selected(is_recording)
+                                .fill(ui.visuals().extreme_bg_color)
+                                .stroke(Stroke::new(1.0_f32, border))
                                 .min_size(Vec2::new(170.0, 26.0));
                             let resp = ui.add(btn).on_hover_text(if is_recording {
                                 "Klicken zum Abbrechen"
@@ -2281,10 +2296,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let screenshot_target = cli.screenshot_path;
+    let open_settings = cli.open_settings;
     eframe::run_native(
         "Z-SHOT",
         options,
-        Box::new(move |cc| Ok(Box::new(ZShotApp::new(cc, screenshot_target)))),
+        Box::new(move |cc| Ok(Box::new(ZShotApp::new(cc, screenshot_target, open_settings)))),
     )?;
     Ok(())
 }

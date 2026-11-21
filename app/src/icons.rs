@@ -1,3 +1,6 @@
+// Z-SHOT — Copyright (C) 2026 R. Trunk
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
 
 /// Crisp 24x24 Heroicons-inspired outline icons rendered directly with egui Painter.

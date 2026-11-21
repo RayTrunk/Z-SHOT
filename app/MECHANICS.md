@@ -1,6 +1,6 @@
 # Z-SHOT — Mechanics & Configuration
 
-Z-SHOT is a screenshot tool with a simple graphical interface in Rust + egui, Segoe UI typography, and Heroicons-style vector icons.
+Z-SHOT is a screenshot tool with a simple graphical interface in Rust + egui, Segoe UI typography, and Heroicons-style vector icons. © 2026 R. Trunk — GPL-3.0-or-later.
 
 ## Background & Capture Settings
 - **Startup mode (Windows)**: Runs quietly in the background with a system tray icon and notification (user request)
