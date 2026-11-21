@@ -4,8 +4,10 @@ mod background;
 mod capture;
 mod icons;
 mod model;
+mod settings;
 
-use background::BackgroundEvent;
+use background::{BackgroundEvent, BgCommand};
+use settings::{AfterCapture, HotkeyAction, Settings};
 use eframe::egui::{
     self, Align, Color32, ColorImage, CornerRadius, CursorIcon, FontData, FontDefinitions,
     FontFamily, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle,
@@ -361,6 +363,18 @@ struct ZShotApp {
     screenshot_target: Option<PathBuf>,
     frame_count: u32,
     screenshot_requested: bool,
+
+    // Settings
+    settings: Settings,
+    settings_path: PathBuf,
+    show_settings: bool,
+    /// Action whose hotkey is currently being recorded (key press captured system-wide).
+    recording: Option<HotkeyAction>,
+    /// Last registration result per action (`false` = taken by another program).
+    hotkey_status: Vec<(HotkeyAction, bool)>,
+    autostart: bool,
+    /// The editor was visible when the capture started, so return to it afterwards.
+    capture_from_editor: bool,
 }
 
 impl ZShotApp {
@@ -386,10 +400,18 @@ impl ZShotApp {
             }
         }
 
+        let settings_path = album_path.join("settings.json");
+        let settings = if persist {
+            Settings::load(&settings_path)
+        } else {
+            Settings::default()
+        };
+
         // Start native Windows tray + global hotkey listener in normal interactive mode
         let bg_rx = if !is_screenshot_mode {
             let (tx, rx) = mpsc::channel();
             background::start_background_listener(tx, cc.egui_ctx.clone());
+            background::send_command(BgCommand::SetHotkeys(settings.hotkey_bindings()));
             Some(rx)
         } else {
             None
@@ -430,14 +452,33 @@ impl ZShotApp {
             pending_text: None,
             crop_rect: None,
             delay_capture_at: None,
-            status_msg: "Bereit (Druck / Strg+Umschalt+S für Bereich)".into(),
+            status_msg: format!("Bereit ({} für Bereich)", settings.region_hotkeys_label()),
             status_until: None,
             persist,
             album_path,
             screenshot_target,
             frame_count: 0,
             screenshot_requested: false,
+            settings,
+            settings_path,
+            show_settings: false,
+            recording: None,
+            hotkey_status: Vec::new(),
+            autostart: settings::autostart_enabled(),
+            capture_from_editor: false,
         }
+    }
+
+    fn save_settings(&mut self) {
+        if self.persist {
+            if let Err(e) = self.settings.save(&self.settings_path) {
+                self.set_status(format!("Einstellungen nicht gespeichert: {e}"));
+            }
+        }
+    }
+
+    fn apply_hotkeys(&self) {
+        background::send_command(BgCommand::SetHotkeys(self.settings.hotkey_bindings()));
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -480,6 +521,7 @@ impl ZShotApp {
 
     fn begin_region_capture(&mut self, ctx: &egui::Context) {
         let was_visible = self.mode != AppMode::Background;
+        self.capture_from_editor = was_visible;
         if was_visible {
             // Briefly hide the editor so it doesn't appear in the captured desktop
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -537,23 +579,11 @@ impl ZShotApp {
             full_img
         };
 
-        let id = format!("shot-{}", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f"));
-        let title = format!("Bereich {}", self.items.len() + 1);
-        let item = ShotItem::new(id, title, String::new(), cropped);
-        if self.persist {
-            let _ = save_item_image(&self.album_path, &item);
-        }
-        self.items.insert(0, item);
-        self.selected = 0;
-        self.selected_annotation = None;
-        self.crop_rect = None;
-        self.pan = Vec2::ZERO;
-        self.persist_album();
-        self.set_status("Bereich aufgenommen — bereit zum Bearbeiten");
-        self.show_editor_gui(ctx);
+        self.deliver_capture(ctx, cropped, "Bereich");
     }
 
     fn take_full_capture(&mut self, ctx: &egui::Context) {
+        self.capture_from_editor = self.mode != AppMode::Background;
         let img = match capture::capture_primary_screen() {
             Ok(img) => img,
             Err(err) => {
@@ -561,33 +591,70 @@ impl ZShotApp {
                 capture::generate_sample_capture(self.items.len())
             }
         };
-        let id = format!("shot-{}", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f"));
-        let title = format!("Vollbild {}", self.items.len() + 1);
+        self.deliver_capture(ctx, img, "Vollbild");
+    }
+
+    /// Adds a fresh capture to the album and applies the "after capture" setting:
+    /// open the editor, save straight to the capture folder, or both.
+    fn deliver_capture(&mut self, ctx: &egui::Context, img: RgbaImage, kind: &str) {
+        let now = chrono::Local::now();
+        let id = format!("shot-{}", now.format("%Y%m%d-%H%M%S-%3f"));
+        let title = format!("{} {}", kind, self.items.len() + 1);
         let item = ShotItem::new(id, title, String::new(), img);
         if self.persist {
             let _ = save_item_image(&self.album_path, &item);
         }
+
+        let after = self.settings.after_capture;
+        let mut status = format!("{kind} aufgenommen — bereit zum Bearbeiten");
+        if after.saves() {
+            let dir = self.settings.effective_save_dir();
+            let result = std::fs::create_dir_all(&dir)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    let path = settings::unique_capture_path(&dir, now);
+                    item.image.save(&path).map(|()| path).map_err(|e| e.to_string())
+                });
+            let (title, text) = match result {
+                Ok(path) => {
+                    status = format!("Gespeichert: {}", path.display());
+                    ("Screenshot gespeichert".to_string(), path.display().to_string())
+                }
+                Err(e) => {
+                    status = format!("Speichern fehlgeschlagen: {e}");
+                    ("Speichern fehlgeschlagen".to_string(), format!("{} — {e}", dir.display()))
+                }
+            };
+            if !after.opens_editor() && !self.capture_from_editor {
+                background::send_command(BgCommand::Notify { title, text });
+            }
+        }
+        if self.settings.copy_to_clipboard {
+            if let Err(e) = copy_image_to_clipboard(&item.image) {
+                status = format!("{status} · Zwischenablage-Fehler: {e}");
+            }
+        }
+
         self.items.insert(0, item);
         self.selected = 0;
         self.selected_annotation = None;
         self.crop_rect = None;
         self.pan = Vec2::ZERO;
         self.persist_album();
-        self.set_status("Vollbild im Album gespeichert");
-        self.show_editor_gui(ctx);
+        self.set_status(status);
+
+        if after.opens_editor() || self.capture_from_editor {
+            self.show_editor_gui(ctx);
+        } else {
+            self.hide_to_background(ctx);
+        }
     }
 
     fn copy_selected_to_clipboard(&mut self) {
         let Some(item) = self.items.get(self.selected) else {
             return;
         };
-        let flat = item.render_flattened();
-        let img_data = arboard::ImageData {
-            width: flat.width() as usize,
-            height: flat.height() as usize,
-            bytes: std::borrow::Cow::Owned(flat.into_raw()),
-        };
-        match arboard::Clipboard::new().and_then(|mut cb| cb.set_image(img_data)) {
+        match copy_image_to_clipboard(&item.render_flattened()) {
             Ok(()) => self.set_status("In Zwischenablage kopiert"),
             Err(e) => self.set_status(format!("Zwischenablage-Fehler: {}", e)),
         }
@@ -603,7 +670,10 @@ impl ZShotApp {
                 .title
                 .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
         );
+        let export_dir = self.settings.effective_save_dir();
+        let _ = std::fs::create_dir_all(&export_dir);
         if let Some(path) = rfd::FileDialog::new()
+            .set_directory(&export_dir)
             .set_file_name(&default_name)
             .add_filter("PNG-Bild", &["png"])
             .save_file()
@@ -869,7 +939,7 @@ impl ZShotApp {
 
                     // Primary capture action: Region overlay capture
                     if icon_text_button(ui, Icon::Crop, "Bereich", true)
-                        .on_hover_text("Bereich auf dem Bildschirm markieren (Druck / Strg+Umschalt+S)")
+                        .on_hover_text(format!("Bereich auf dem Bildschirm markieren ({})", self.settings.region_hotkeys_label()))
                         .clicked()
                     {
                         self.begin_region_capture(ctx);
@@ -969,6 +1039,12 @@ impl ZShotApp {
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
 
+                        if icon_button(ui, Icon::Cog, self.show_settings, "Einstellungen")
+                            .clicked()
+                        {
+                            self.show_settings = !self.show_settings;
+                        }
+
                         let theme_icon = if self.dark_mode { Icon::Sun } else { Icon::Moon };
                         let theme_tip = if self.dark_mode {
                             "Helles Design"
@@ -981,7 +1057,7 @@ impl ZShotApp {
                         }
 
                         if icon_text_button(ui, Icon::Background, "Hintergrund", false)
-                            .on_hover_text("Fenster ausblenden — weiter im Hintergrund (Druck / Strg+Umschalt+S)")
+                            .on_hover_text(format!("Fenster ausblenden — weiter im Hintergrund ({})", self.settings.region_hotkeys_label()))
                             .clicked()
                         {
                             self.hide_to_background(ctx);
@@ -1257,7 +1333,7 @@ impl ZShotApp {
             .show(ctx, |ui| {
                 if self.items.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("Noch keine Screenshots. Drücke Druck oder klicke auf „Bereich“.");
+                        ui.label(format!("Noch keine Screenshots. Drücke {} oder klicke auf „Bereich“.", self.settings.region_hotkeys_label()));
                     });
                     return;
                 }
@@ -1612,6 +1688,216 @@ impl ZShotApp {
             });
     }
 
+    fn draw_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            if self.recording.take().is_some() {
+                background::send_command(BgCommand::CancelRecording);
+            }
+            return;
+        }
+
+        let mut open = true;
+        let mut close_clicked = false;
+        egui::Window::new("Einstellungen")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+
+                // --- Hotkeys -------------------------------------------------
+                ui.label(RichText::new("Tastenkürzel").strong().size(15.0));
+                ui.label(
+                    RichText::new(
+                        "Auf das Feld klicken und die gewünschte Taste oder Kombination drücken \
+                         (wird automatisch erkannt). Esc bricht ab.",
+                    )
+                    .weak()
+                    .size(12.0),
+                );
+                egui::Grid::new("hotkey_grid")
+                    .num_columns(4)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        for action in HotkeyAction::ALL {
+                            ui.label(action.title());
+
+                            let is_recording = self.recording == Some(action);
+                            let text = if is_recording {
+                                RichText::new("Taste drücken …").color(Color32::from_rgb(245, 158, 11))
+                            } else {
+                                match self.settings.hotkey(action) {
+                                    Some(hk) => RichText::new(hk.label()).strong(),
+                                    None => RichText::new("Nicht belegt").weak(),
+                                }
+                            };
+                            let btn = egui::Button::new(text)
+                                .selected(is_recording)
+                                .min_size(Vec2::new(170.0, 26.0));
+                            let resp = ui.add(btn).on_hover_text(if is_recording {
+                                "Klicken zum Abbrechen"
+                            } else {
+                                "Klicken und neue Taste drücken"
+                            });
+                            if resp.clicked() {
+                                if is_recording {
+                                    background::send_command(BgCommand::CancelRecording);
+                                } else {
+                                    if self.recording.is_some() {
+                                        background::send_command(BgCommand::CancelRecording);
+                                    }
+                                    self.recording = Some(action);
+                                    background::send_command(BgCommand::StartRecording);
+                                }
+                            }
+
+                            let clear_enabled = self.settings.hotkey(action).is_some() && !is_recording;
+                            if ui
+                                .add_enabled(clear_enabled, egui::Button::new("Entfernen"))
+                                .clicked()
+                            {
+                                self.settings.set_hotkey(action, None);
+                                self.save_settings();
+                                self.apply_hotkeys();
+                            }
+
+                            let status = self
+                                .hotkey_status
+                                .iter()
+                                .find(|(a, _)| *a == action)
+                                .map(|(_, ok)| *ok);
+                            match (self.settings.hotkey(action), status) {
+                                (Some(_), Some(true)) => {
+                                    ui.label(RichText::new("aktiv").color(Color32::from_rgb(16, 185, 129)));
+                                }
+                                (Some(_), Some(false)) => {
+                                    ui.label(RichText::new("belegt").color(Color32::from_rgb(239, 68, 68)))
+                                        .on_hover_text(
+                                            "Windows hat die Kombination abgelehnt — sie wird \
+                                             vermutlich von einem anderen Programm verwendet.",
+                                        );
+                                }
+                                _ => {
+                                    ui.label("");
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                let print_used = HotkeyAction::ALL.into_iter().any(|a| {
+                    self.settings.hotkey(a).map(|h| h.vk) == Some(settings::VK_SNAPSHOT)
+                });
+                if print_used {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "Öffnet die Druck-Taste stattdessen das Windows-Snipping-Tool? \
+                                 Dann in Windows unter Barrierefreiheit › Tastatur die Option \
+                                 „Druck-Taste zum Öffnen der Bildschirmaufnahme verwenden“ ausschalten.",
+                            )
+                            .weak()
+                            .size(12.0),
+                        );
+                        if ui.small_button("Windows-Einstellung öffnen").clicked() {
+                            let _ = std::process::Command::new("explorer")
+                                .arg("ms-settings:easeofaccess-keyboard")
+                                .spawn();
+                        }
+                    });
+                }
+
+                ui.separator();
+
+                // --- After capture -------------------------------------------
+                ui.label(RichText::new("Nach der Bereichsauswahl").strong().size(15.0));
+                let before = self.settings.clone();
+                ui.radio_value(
+                    &mut self.settings.after_capture,
+                    AfterCapture::OpenEditor,
+                    "Editor-Fenster öffnen",
+                );
+                ui.radio_value(
+                    &mut self.settings.after_capture,
+                    AfterCapture::SaveDirect,
+                    "Direkt speichern (ohne Fenster)",
+                );
+                ui.radio_value(
+                    &mut self.settings.after_capture,
+                    AfterCapture::SaveAndOpenEditor,
+                    "Speichern und Editor-Fenster öffnen",
+                );
+                ui.checkbox(
+                    &mut self.settings.copy_to_clipboard,
+                    "Zusätzlich in die Zwischenablage kopieren",
+                );
+
+                ui.separator();
+
+                // --- Save folder ---------------------------------------------
+                ui.label(RichText::new("Speicherort").strong().size(15.0));
+                let dir = self.settings.effective_save_dir();
+                ui.label(RichText::new(dir.display().to_string()).monospace().size(12.0));
+                ui.label(
+                    RichText::new(format!(
+                        "Dateiname nach Datum und Uhrzeit, z. B. {}",
+                        settings::capture_file_name(chrono::Local::now())
+                    ))
+                    .weak()
+                    .size(12.0),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Ändern …").clicked() {
+                        let _ = std::fs::create_dir_all(&dir);
+                        if let Some(picked) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
+                            self.settings.save_dir = Some(picked);
+                        }
+                    }
+                    if ui.button("Ordner öffnen").clicked() {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                    }
+                    if self.settings.save_dir.is_some()
+                        && ui.button("Standard (Bilder\\Z-SHOT)").clicked()
+                    {
+                        self.settings.save_dir = None;
+                    }
+                });
+
+                if self.settings != before {
+                    self.save_settings();
+                }
+
+                ui.separator();
+
+                // --- General -------------------------------------------------
+                ui.label(RichText::new("Allgemein").strong().size(15.0));
+                let mut autostart = self.autostart;
+                if ui.checkbox(&mut autostart, "Beim Windows-Start im Hintergrund starten").changed() {
+                    if let Err(e) = settings::set_autostart(autostart) {
+                        self.set_status(format!("Autostart: {e}"));
+                    }
+                    self.autostart = settings::autostart_enabled();
+                }
+
+                ui.add_space(4.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Schließen").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+
+        if !open || close_clicked {
+            self.show_settings = false;
+            if self.recording.take().is_some() {
+                background::send_command(BgCommand::CancelRecording);
+            }
+        }
+    }
+
     fn draw_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(32.0)
@@ -1640,9 +1926,11 @@ impl ZShotApp {
                         );
                     }
 
+                    let idle_hint =
+                        format!("{}: Bereich aufnehmen", self.settings.region_hotkeys_label());
                     let active_status = match self.status_until {
                         Some(until) if Instant::now() < until => self.status_msg.as_str(),
-                        _ => "Druck / Strg+Umschalt+S: Bereich aufnehmen",
+                        _ => idle_hint.as_str(),
                     };
                     ui.separator();
                     ui.label(RichText::new(active_status).weak().size(12.0));
@@ -1663,6 +1951,15 @@ impl ZShotApp {
                 });
             });
     }
+}
+
+fn copy_image_to_clipboard(img: &RgbaImage) -> Result<(), arboard::Error> {
+    let img_data = arboard::ImageData {
+        width: img.width() as usize,
+        height: img.height() as usize,
+        bytes: std::borrow::Cow::Borrowed(img.as_raw()),
+    };
+    arboard::Clipboard::new().and_then(|mut cb| cb.set_image(img_data))
 }
 
 fn paint_annotation(
@@ -1824,6 +2121,35 @@ impl eframe::App for ZShotApp {
                 BackgroundEvent::StartRegionCapture => self.begin_region_capture(ctx),
                 BackgroundEvent::StartFullCapture => self.take_full_capture(ctx),
                 BackgroundEvent::ShowGui => self.show_editor_gui(ctx),
+                BackgroundEvent::OpenSettings => {
+                    if self.mode != AppMode::Editor {
+                        self.show_editor_gui(ctx);
+                    }
+                    self.show_settings = true;
+                }
+                BackgroundEvent::HotkeysApplied(status) => {
+                    let failed: Vec<&str> = status
+                        .iter()
+                        .filter(|(_, ok)| !ok)
+                        .map(|(a, _)| a.title())
+                        .collect();
+                    if !failed.is_empty() {
+                        self.set_status(format!(
+                            "Tastenkürzel belegt (anderes Programm?): {}",
+                            failed.join(", ")
+                        ));
+                    }
+                    self.hotkey_status = status;
+                }
+                BackgroundEvent::HotkeyRecorded(recorded) => {
+                    if let (Some(action), Some(hk)) = (self.recording.take(), recorded) {
+                        self.settings.set_hotkey(action, Some(hk));
+                        self.save_settings();
+                        self.apply_hotkeys();
+                        self.set_status(format!("{}: {}", action.title(), hk.label()));
+                    }
+                    self.recording = None;
+                }
                 BackgroundEvent::Quit => {
                     self.allow_exit = true;
                     ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1876,6 +2202,7 @@ impl eframe::App for ZShotApp {
                 self.draw_status_bar(ctx);
                 self.draw_sidebar(ctx);
                 self.draw_canvas(ctx);
+                self.draw_settings_window(ctx);
             }
         }
 

@@ -33,6 +33,7 @@ pub enum Icon {
     XMark,
     Background,
     Power,
+    Cog,
 }
 
 /// Paint an icon inside `rect` using a 24x24 coordinate space (matching Heroicons).
@@ -312,6 +313,20 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 arc.push(pt(12.0 + a.cos() * 7.2, 12.5 + a.sin() * 7.2));
             }
             painter.add(egui::Shape::line(arc, stroke));
+        }
+        Icon::Cog => {
+            // Gear: ring with 8 teeth and a hub
+            painter.circle_stroke(pt(12.0, 12.0), 6.0 * s, stroke);
+            painter.circle_stroke(pt(12.0, 12.0), 2.4 * s, thin);
+            let tooth = Stroke::new((2.6 * s).max(1.6), color);
+            for i in 0..8 {
+                let a = (i as f32) * std::f32::consts::FRAC_PI_4 + std::f32::consts::PI / 8.0;
+                let (c, si) = (a.cos(), a.sin());
+                painter.line_segment(
+                    [pt(12.0 + c * 6.0, 12.0 + si * 6.0), pt(12.0 + c * 8.8, 12.0 + si * 8.8)],
+                    tooth,
+                );
+            }
         }
     }
 }
