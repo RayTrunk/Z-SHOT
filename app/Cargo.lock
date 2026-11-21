@@ -3475,6 +3475,7 @@ dependencies = [
  "egui_extras",
  "embed-resource",
  "image",
+ "raw-window-handle",
  "resvg",
  "rfd",
  "serde",

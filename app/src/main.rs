@@ -7,6 +7,7 @@
 mod background;
 mod capture;
 mod icons;
+mod log;
 mod model;
 mod settings;
 
@@ -383,8 +384,10 @@ struct ZShotApp {
     capture_from_editor: bool,
     /// eframe force-shows the window after the first frame; we hide it again once.
     startup_hidden: bool,
-    /// The window starts off-screen; it is moved onto the monitor the first time it is shown.
-    window_placed: bool,
+    /// Where the editor window was before it was hidden or parked off-screen.
+    editor_pos: Option<Pos2>,
+    /// A full-screen capture (instead of region) waits for the editor to move away.
+    pending_full_capture: bool,
 }
 
 /// Off-screen start position, so eframe's forced first-frame show is never visible.
@@ -398,12 +401,39 @@ impl ZShotApp {
     ) -> Self {
         icons::install(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
+
+        // Let the background thread wake this window while it is hidden (see wake_ui).
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            match cc.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(w)) => background::set_ui_window(w.hwnd.get()),
+                other => log::log(format!("Kein Win32-Fenster-Handle: {other:?}")),
+            }
+        }
         let dark_mode = true;
         apply_theme(&cc.egui_ctx, dark_mode);
 
         let is_screenshot_mode = screenshot_target.is_some();
         let persist = !is_screenshot_mode;
         let album_path = album_dir();
+
+        let settings_path = album_path.join("settings.json");
+        let settings = if persist {
+            Settings::load(&settings_path)
+        } else {
+            Settings::default()
+        };
+
+        // Start tray + global hotkeys first, before the (slow) album load, so the
+        // hotkeys work right after launch.
+        let bg_rx = if !is_screenshot_mode {
+            let (tx, rx) = mpsc::channel();
+            background::start_background_listener(tx, cc.egui_ctx.clone());
+            background::send_command(BgCommand::SetHotkeys(settings.hotkey_bindings()));
+            Some(rx)
+        } else {
+            None
+        };
 
         let mut items = if persist {
             load_album(&album_path)
@@ -417,23 +447,6 @@ impl ZShotApp {
                 let _ = save_album(&album_path, &items);
             }
         }
-
-        let settings_path = album_path.join("settings.json");
-        let settings = if persist {
-            Settings::load(&settings_path)
-        } else {
-            Settings::default()
-        };
-
-        // Start native Windows tray + global hotkey listener in normal interactive mode
-        let bg_rx = if !is_screenshot_mode {
-            let (tx, rx) = mpsc::channel();
-            background::start_background_listener(tx, cc.egui_ctx.clone());
-            background::send_command(BgCommand::SetHotkeys(settings.hotkey_bindings()));
-            Some(rx)
-        } else {
-            None
-        };
 
         // Start in Background mode on normal Windows launch; Editor mode in --screenshot mode
         let initial_mode = if is_screenshot_mode || !cfg!(windows) {
@@ -485,7 +498,8 @@ impl ZShotApp {
             autostart: settings::autostart_enabled(),
             capture_from_editor: false,
             startup_hidden: initial_mode != AppMode::Background,
-            window_placed: initial_mode != AppMode::Background,
+            editor_pos: None,
+            pending_full_capture: false,
         }
     }
 
@@ -512,7 +526,29 @@ impl ZShotApp {
         }
     }
 
+    /// Remembers where the editor window is, so it reappears there later.
+    fn remember_editor_pos(&mut self, ctx: &egui::Context) {
+        if self.mode == AppMode::Editor {
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                if rect.min.x > -10000.0 && rect.min.y > -10000.0 {
+                    self.editor_pos = Some(rect.min);
+                }
+            }
+        }
+    }
+
+    /// Moves the (still visible) window off-screen. Unlike hiding it, this keeps
+    /// eframe's frames running, which the delayed capture steps rely on.
+    fn park_offscreen(&mut self, ctx: &egui::Context) {
+        self.remember_editor_pos(ctx);
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
+            OFFSCREEN_POS[0],
+            OFFSCREEN_POS[1],
+        )));
+    }
+
     fn hide_to_background(&mut self, ctx: &egui::Context) {
+        self.remember_editor_pos(ctx);
         self.mode = AppMode::Background;
         self.overlay_image = None;
         self.overlay_texture = None;
@@ -534,14 +570,15 @@ impl ZShotApp {
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(1280.0, 800.0)));
-        if !self.window_placed {
-            self.window_placed = true;
+        // The window may be parked off-screen: put it back where the editor was,
+        // or centre it on the first show.
+        let pos = self.editor_pos.unwrap_or_else(|| {
             let monitor = ctx
                 .input(|i| i.viewport().monitor_size)
                 .unwrap_or(Vec2::new(1920.0, 1080.0));
-            let pos = ((monitor - Vec2::new(1280.0, 840.0)) * 0.5).max(Vec2::ZERO);
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.to_pos2()));
-        }
+            ((monitor - Vec2::new(1280.0, 840.0)) * 0.5).max(Vec2::ZERO).to_pos2()
+        });
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.fit_requested = true;
@@ -551,8 +588,9 @@ impl ZShotApp {
         let was_visible = self.mode != AppMode::Background;
         self.capture_from_editor = was_visible;
         if was_visible {
-            // Briefly hide the editor so it doesn't appear in the captured desktop
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            // Move the editor away so it doesn't appear in the captured desktop
+            self.park_offscreen(ctx);
+            self.pending_full_capture = false;
             self.mode = AppMode::PreparingOverlay;
             self.overlay_capture_at = Some(Instant::now() + Duration::from_millis(180));
             ctx.request_repaint_after(Duration::from_millis(60));
@@ -576,10 +614,9 @@ impl ZShotApp {
         self.overlay_drag_curr = None;
         self.mode = AppMode::RegionOverlay;
 
-        if !self.window_placed {
-            // Fullscreen uses the window's current monitor: bring it onto the primary one.
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
-        }
+        // Fullscreen uses the window's current monitor; it is usually parked off-screen,
+        // so bring it onto the primary monitor first.
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
@@ -615,7 +652,19 @@ impl ZShotApp {
     }
 
     fn take_full_capture(&mut self, ctx: &egui::Context) {
-        self.capture_from_editor = self.mode != AppMode::Background;
+        if self.mode == AppMode::Editor {
+            // Move the editor out of the picture first, capture a moment later.
+            self.capture_from_editor = true;
+            self.park_offscreen(ctx);
+            self.pending_full_capture = true;
+            self.mode = AppMode::PreparingOverlay;
+            self.overlay_capture_at = Some(Instant::now() + Duration::from_millis(180));
+            ctx.request_repaint_after(Duration::from_millis(60));
+            return;
+        }
+        if self.mode == AppMode::Background {
+            self.capture_from_editor = false;
+        }
         let img = match capture::capture_primary_screen() {
             Ok(img) => img,
             Err(err) => {
@@ -2155,6 +2204,7 @@ impl eframe::App for ZShotApp {
             }
         }
         for ev in pending_events {
+            log::log(format!("Verarbeitet (Modus {:?}): {ev:?}", self.mode));
             match ev {
                 BackgroundEvent::StartRegionCapture => self.begin_region_capture(ctx),
                 BackgroundEvent::StartFullCapture => self.take_full_capture(ctx),
@@ -2201,7 +2251,11 @@ impl eframe::App for ZShotApp {
             if let Some(at) = self.overlay_capture_at {
                 if Instant::now() >= at {
                     self.overlay_capture_at = None;
-                    self.enter_region_overlay(ctx);
+                    if std::mem::take(&mut self.pending_full_capture) {
+                        self.take_full_capture(ctx);
+                    } else {
+                        self.enter_region_overlay(ctx);
+                    }
                 } else {
                     ctx.request_repaint_after(Duration::from_millis(30));
                     return;
@@ -2299,6 +2353,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let is_screenshot_mode = cli.screenshot_path.is_some();
+    if !is_screenshot_mode {
+        log::log(format!("Z-SHOT {} gestartet", env!("CARGO_PKG_VERSION")));
+    }
 
     let mut viewport = ViewportBuilder::default()
         .with_title("Z-SHOT")
