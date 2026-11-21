@@ -1,14 +1,19 @@
 // Z-SHOT — Copyright (C) 2026 R. Trunk
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
+//! Heroicons (https://heroicons.com, v2.2.0, MIT — see assets/heroicons/LICENSE).
+//!
+//! The 24×24 outline SVGs are embedded with their colour set to white, rasterised by
+//! egui_extras' SVG loader at the exact on-screen pixel size and tinted at paint time.
 
-/// Crisp 24x24 Heroicons-inspired outline icons rendered directly with egui Painter.
+use eframe::egui::{self, load::SizeHint, load::TexturePoll, Color32, Painter, Pos2, Rect, Stroke, TextureOptions, Vec2};
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Camera,
     Desktop,
+    Region,
     Crop,
     Clock,
     Cursor,
@@ -39,299 +44,125 @@ pub enum Icon {
     Cog,
 }
 
-/// Paint an icon inside `rect` using a 24x24 coordinate space (matching Heroicons).
-pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
-    let s = rect.width().min(rect.height()) / 24.0;
-    let origin = rect.center() - Vec2::splat(12.0 * s);
-    let pt = |x: f32, y: f32| Pos2::new(origin.x + x * s, origin.y + y * s);
-    let stroke = Stroke::new((1.75 * s).max(1.2), color);
-    let thin = Stroke::new((1.4 * s).max(1.0), color);
+macro_rules! svg {
+    ($name:literal) => {
+        (
+            concat!("bytes://heroicons/", $name, ".svg"),
+            include_bytes!(concat!("../assets/heroicons/", $name, ".svg")) as &'static [u8],
+        )
+    };
+}
 
-    match icon {
-        Icon::Camera => {
-            painter.rect_stroke(
-                Rect::from_min_max(pt(3.0, 7.0), pt(21.0, 19.0)),
-                3.0 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.line_segment([pt(7.5, 7.0), pt(9.0, 4.5)], stroke);
-            painter.line_segment([pt(9.0, 4.5), pt(15.0, 4.5)], stroke);
-            painter.line_segment([pt(15.0, 4.5), pt(16.5, 7.0)], stroke);
-            painter.circle_stroke(pt(12.0, 13.0), 3.3 * s, stroke);
-        }
-        Icon::Desktop => {
-            painter.rect_stroke(
-                Rect::from_min_max(pt(3.0, 4.0), pt(21.0, 16.5)),
-                2.0 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.line_segment([pt(9.0, 20.0), pt(15.0, 20.0)], stroke);
-            painter.line_segment([pt(12.0, 16.5), pt(12.0, 20.0)], stroke);
-        }
-        Icon::Crop => {
-            // Viewfinder / crop corners
-            painter.line_segment([pt(6.5, 3.0), pt(6.5, 17.5)], stroke);
-            painter.line_segment([pt(6.5, 17.5), pt(21.0, 17.5)], stroke);
-            painter.line_segment([pt(3.0, 6.5), pt(17.5, 6.5)], stroke);
-            painter.line_segment([pt(17.5, 6.5), pt(17.5, 21.0)], stroke);
-        }
-        Icon::Clock => {
-            painter.circle_stroke(pt(12.0, 12.0), 8.5 * s, stroke);
-            painter.line_segment([pt(12.0, 7.0), pt(12.0, 12.0)], stroke);
-            painter.line_segment([pt(12.0, 12.0), pt(15.5, 14.0)], stroke);
-        }
-        Icon::Cursor => {
-            let pts = vec![
-                pt(5.5, 4.0),
-                pt(5.5, 18.5),
-                pt(9.5, 14.8),
-                pt(12.8, 20.0),
-                pt(15.0, 18.8),
-                pt(11.8, 13.6),
-                pt(17.5, 13.6),
-                pt(5.5, 4.0),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::ArrowUpRight => {
-            painter.line_segment([pt(5.5, 18.5), pt(18.5, 5.5)], stroke);
-            painter.line_segment([pt(9.5, 5.5), pt(18.5, 5.5)], stroke);
-            painter.line_segment([pt(18.5, 5.5), pt(18.5, 14.5)], stroke);
-        }
-        Icon::Square => {
-            painter.rect_stroke(
-                Rect::from_min_max(pt(4.5, 4.5), pt(19.5, 19.5)),
-                2.5 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-        }
-        Icon::Highlighter => {
-            // Chisel tip marker
-            let pts = vec![
-                pt(15.0, 4.0),
-                pt(20.0, 9.0),
-                pt(10.5, 18.5),
-                pt(5.5, 18.5),
-                pt(5.5, 13.5),
-                pt(15.0, 4.0),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-            painter.line_segment([pt(4.0, 20.5), pt(16.0, 20.5)], stroke);
-        }
-        Icon::EyeSlash => {
-            // Opaque redaction / privacy icon
-            painter.line_segment([pt(3.5, 12.0), pt(7.5, 8.2)], thin);
-            painter.line_segment([pt(7.5, 8.2), pt(12.0, 7.0)], thin);
-            painter.line_segment([pt(12.0, 7.0), pt(16.5, 8.2)], thin);
-            painter.line_segment([pt(16.5, 8.2), pt(20.5, 12.0)], thin);
-            painter.line_segment([pt(3.5, 12.0), pt(7.5, 15.8)], thin);
-            painter.line_segment([pt(7.5, 15.8), pt(12.0, 17.0)], thin);
-            painter.line_segment([pt(12.0, 17.0), pt(16.5, 15.8)], thin);
-            painter.line_segment([pt(16.5, 15.8), pt(20.5, 12.0)], thin);
-            painter.circle_stroke(pt(12.0, 12.0), 2.5 * s, thin);
-            painter.line_segment([pt(4.0, 4.0), pt(20.0, 20.0)], stroke);
-        }
-        Icon::Text => {
-            painter.line_segment([pt(5.0, 5.5), pt(19.0, 5.5)], stroke);
-            painter.line_segment([pt(12.0, 5.5), pt(12.0, 19.0)], stroke);
-            painter.line_segment([pt(8.5, 19.0), pt(15.5, 19.0)], stroke);
-        }
-        Icon::Pencil => {
-            let pts = vec![
-                pt(16.5, 4.5),
-                pt(19.5, 7.5),
-                pt(8.5, 18.5),
-                pt(4.5, 19.5),
-                pt(5.5, 15.5),
-                pt(16.5, 4.5),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::Undo => {
-            painter.line_segment([pt(9.0, 7.0), pt(5.0, 10.5)], stroke);
-            painter.line_segment([pt(9.0, 14.0), pt(5.0, 10.5)], stroke);
-            let pts = vec![
-                pt(5.5, 10.5),
-                pt(14.5, 10.5),
-                pt(17.5, 11.5),
-                pt(18.5, 14.5),
-                pt(17.5, 17.5),
-                pt(14.5, 18.5),
-                pt(10.0, 18.5),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::Redo => {
-            painter.line_segment([pt(15.0, 7.0), pt(19.0, 10.5)], stroke);
-            painter.line_segment([pt(15.0, 14.0), pt(19.0, 10.5)], stroke);
-            let pts = vec![
-                pt(18.5, 10.5),
-                pt(9.5, 10.5),
-                pt(6.5, 11.5),
-                pt(5.5, 14.5),
-                pt(6.5, 17.5),
-                pt(9.5, 18.5),
-                pt(14.0, 18.5),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::Clipboard => {
-            painter.rect_stroke(
-                Rect::from_min_max(pt(5.5, 5.5), pt(18.5, 20.5)),
-                2.0 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.rect_stroke(
-                Rect::from_min_max(pt(9.0, 3.5), pt(15.0, 7.0)),
-                1.2 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.line_segment([pt(8.5, 11.5), pt(15.5, 11.5)], thin);
-            painter.line_segment([pt(8.5, 15.5), pt(13.5, 15.5)], thin);
-        }
-        Icon::Download => {
-            painter.line_segment([pt(12.0, 4.0), pt(12.0, 15.0)], stroke);
-            painter.line_segment([pt(8.0, 11.5), pt(12.0, 15.5)], stroke);
-            painter.line_segment([pt(16.0, 11.5), pt(12.0, 15.5)], stroke);
-            let pts = vec![pt(4.5, 16.0), pt(4.5, 19.5), pt(19.5, 19.5), pt(19.5, 16.0)];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::Trash => {
-            painter.line_segment([pt(4.5, 6.5), pt(19.5, 6.5)], stroke);
-            painter.line_segment([pt(9.0, 4.0), pt(15.0, 4.0)], stroke);
-            let pts = vec![pt(6.5, 6.5), pt(7.5, 19.5), pt(16.5, 19.5), pt(17.5, 6.5)];
-            painter.add(egui::Shape::line(pts, stroke));
-            painter.line_segment([pt(10.0, 10.0), pt(10.0, 16.0)], thin);
-            painter.line_segment([pt(14.0, 10.0), pt(14.0, 16.0)], thin);
-        }
-        Icon::Star | Icon::StarSolid => {
-            let star = vec![
-                pt(12.0, 3.5),
-                pt(14.6, 8.8),
-                pt(20.4, 9.6),
-                pt(16.2, 13.7),
-                pt(17.2, 19.5),
-                pt(12.0, 16.7),
-                pt(6.8, 19.5),
-                pt(7.8, 13.7),
-                pt(3.6, 9.6),
-                pt(9.4, 8.8),
-            ];
-            if matches!(icon, Icon::StarSolid) {
-                painter.add(egui::Shape::convex_polygon(star.clone(), color, Stroke::NONE));
-            }
-            let mut closed = star;
-            closed.push(pt(12.0, 3.5));
-            painter.add(egui::Shape::line(closed, stroke));
-        }
-        Icon::Search => {
-            painter.circle_stroke(pt(10.5, 10.5), 6.0 * s, stroke);
-            painter.line_segment([pt(15.0, 15.0), pt(20.0, 20.0)], stroke);
-        }
-        Icon::Sun => {
-            painter.circle_stroke(pt(12.0, 12.0), 4.0 * s, stroke);
-            for i in 0..8 {
-                let a = (i as f32) * std::f32::consts::FRAC_PI_4;
-                let (c, si) = (a.cos(), a.sin());
-                painter.line_segment(
-                    [pt(12.0 + c * 6.5, 12.0 + si * 6.5), pt(12.0 + c * 9.0, 12.0 + si * 9.0)],
-                    thin,
-                );
-            }
-        }
-        Icon::Moon => {
-            let pts = vec![
-                pt(15.0, 4.5),
-                pt(10.5, 5.5),
-                pt(7.0, 8.5),
-                pt(6.0, 13.0),
-                pt(8.0, 17.0),
-                pt(12.0, 19.0),
-                pt(16.5, 18.5),
-                pt(19.5, 16.0),
-                pt(15.0, 15.5),
-                pt(12.0, 13.0),
-                pt(11.5, 9.0),
-                pt(15.0, 4.5),
-            ];
-            painter.add(egui::Shape::line(pts, stroke));
-        }
-        Icon::ZoomIn => {
-            painter.circle_stroke(pt(10.5, 10.5), 6.0 * s, stroke);
-            painter.line_segment([pt(15.0, 15.0), pt(20.0, 20.0)], stroke);
-            painter.line_segment([pt(8.0, 10.5), pt(13.0, 10.5)], thin);
-            painter.line_segment([pt(10.5, 8.0), pt(10.5, 13.0)], thin);
-        }
-        Icon::ZoomOut => {
-            painter.circle_stroke(pt(10.5, 10.5), 6.0 * s, stroke);
-            painter.line_segment([pt(15.0, 15.0), pt(20.0, 20.0)], stroke);
-            painter.line_segment([pt(8.0, 10.5), pt(13.0, 10.5)], thin);
-        }
-        Icon::FitScreen => {
-            painter.line_segment([pt(4.5, 9.0), pt(4.5, 4.5)], stroke);
-            painter.line_segment([pt(4.5, 4.5), pt(9.0, 4.5)], stroke);
-            painter.line_segment([pt(15.0, 4.5), pt(19.5, 4.5)], stroke);
-            painter.line_segment([pt(19.5, 4.5), pt(19.5, 9.0)], stroke);
-            painter.line_segment([pt(19.5, 15.0), pt(19.5, 19.5)], stroke);
-            painter.line_segment([pt(19.5, 19.5), pt(15.0, 19.5)], stroke);
-            painter.line_segment([pt(9.0, 19.5), pt(4.5, 19.5)], stroke);
-            painter.line_segment([pt(4.5, 19.5), pt(4.5, 15.0)], stroke);
-        }
-        Icon::Sidebar => {
-            painter.rect_stroke(
-                Rect::from_min_max(pt(3.5, 4.5), pt(20.5, 19.5)),
-                2.0 * s,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.line_segment([pt(9.0, 4.5), pt(9.0, 19.5)], stroke);
-        }
-        Icon::Check => {
-            painter.line_segment([pt(5.0, 12.5), pt(10.0, 17.5)], stroke);
-            painter.line_segment([pt(10.0, 17.5), pt(19.0, 6.5)], stroke);
-        }
-        Icon::XMark => {
-            painter.line_segment([pt(6.0, 6.0), pt(18.0, 18.0)], stroke);
-            painter.line_segment([pt(18.0, 6.0), pt(6.0, 18.0)], stroke);
-        }
-        Icon::Background => {
-            // Tray / minimize-to-background icon
-            let tray = vec![pt(4.5, 14.5), pt(4.5, 19.5), pt(19.5, 19.5), pt(19.5, 14.5)];
-            painter.add(egui::Shape::line(tray, stroke));
-            painter.line_segment([pt(12.0, 4.5), pt(12.0, 14.0)], stroke);
-            painter.line_segment([pt(8.5, 10.5), pt(12.0, 14.0)], stroke);
-            painter.line_segment([pt(15.5, 10.5), pt(12.0, 14.0)], stroke);
-        }
-        Icon::Power => {
-            painter.line_segment([pt(12.0, 4.0), pt(12.0, 11.5)], stroke);
-            let mut arc = Vec::new();
-            for step in 0..=16 {
-                let a = -0.35 * std::f32::consts::PI
-                    + (step as f32 / 16.0) * (1.70 * std::f32::consts::PI);
-                arc.push(pt(12.0 + a.cos() * 7.2, 12.5 + a.sin() * 7.2));
-            }
-            painter.add(egui::Shape::line(arc, stroke));
-        }
-        Icon::Cog => {
-            // Gear: ring with 8 teeth and a hub
-            painter.circle_stroke(pt(12.0, 12.0), 6.0 * s, stroke);
-            painter.circle_stroke(pt(12.0, 12.0), 2.4 * s, thin);
-            let tooth = Stroke::new((2.6 * s).max(1.6), color);
-            for i in 0..8 {
-                let a = (i as f32) * std::f32::consts::FRAC_PI_4 + std::f32::consts::PI / 8.0;
-                let (c, si) = (a.cos(), a.sin());
-                painter.line_segment(
-                    [pt(12.0 + c * 6.0, 12.0 + si * 6.0), pt(12.0 + c * 8.8, 12.0 + si * 8.8)],
-                    tooth,
-                );
-            }
+impl Icon {
+    pub const ALL: [Icon; 31] = [
+        Icon::Camera, Icon::Desktop, Icon::Region, Icon::Crop, Icon::Clock, Icon::Cursor,
+        Icon::ArrowUpRight, Icon::Square, Icon::Highlighter, Icon::EyeSlash, Icon::Text,
+        Icon::Pencil, Icon::Undo, Icon::Redo, Icon::Clipboard, Icon::Download, Icon::Trash,
+        Icon::Star, Icon::StarSolid, Icon::Search, Icon::Sun, Icon::Moon, Icon::ZoomIn,
+        Icon::ZoomOut, Icon::FitScreen, Icon::Sidebar, Icon::Check, Icon::XMark,
+        Icon::Background, Icon::Power, Icon::Cog,
+    ];
+
+    /// Loader URI and embedded SVG bytes of the Heroicon used for this icon.
+    pub fn source(self) -> (&'static str, &'static [u8]) {
+        match self {
+            Icon::Camera => svg!("camera"),
+            Icon::Desktop => svg!("computer-desktop"),
+            Icon::Region => svg!("viewfinder-circle"),
+            Icon::Crop => svg!("scissors"),
+            Icon::Clock => svg!("clock"),
+            Icon::Cursor => svg!("cursor-arrow-rays"),
+            Icon::ArrowUpRight => svg!("arrow-up-right"),
+            Icon::Square => svg!("stop"),
+            Icon::Highlighter => svg!("paint-brush"),
+            Icon::EyeSlash => svg!("eye-slash"),
+            Icon::Text => svg!("chat-bubble-bottom-center-text"),
+            Icon::Pencil => svg!("pencil"),
+            Icon::Undo => svg!("arrow-uturn-left"),
+            Icon::Redo => svg!("arrow-uturn-right"),
+            Icon::Clipboard => svg!("clipboard-document"),
+            Icon::Download => svg!("arrow-down-tray"),
+            Icon::Trash => svg!("trash"),
+            Icon::Star => svg!("star"),
+            Icon::StarSolid => svg!("star-solid"),
+            Icon::Search => svg!("magnifying-glass"),
+            Icon::Sun => svg!("sun"),
+            Icon::Moon => svg!("moon"),
+            Icon::ZoomIn => svg!("magnifying-glass-plus"),
+            Icon::ZoomOut => svg!("magnifying-glass-minus"),
+            Icon::FitScreen => svg!("arrows-pointing-out"),
+            Icon::Sidebar => svg!("bars-3"),
+            Icon::Check => svg!("check"),
+            Icon::XMark => svg!("x-mark"),
+            Icon::Background => svg!("minus"),
+            Icon::Power => svg!("power"),
+            Icon::Cog => svg!("cog-6-tooth"),
         }
     }
+}
+
+/// Installs the SVG loader and registers all embedded icons. Call once at startup.
+pub fn install(ctx: &egui::Context) {
+    egui_extras::install_image_loaders(ctx);
+    for icon in Icon::ALL {
+        let (uri, bytes) = icon.source();
+        ctx.include_bytes(uri, bytes);
+    }
+}
+
+/// Paints `icon` into `rect`, tinted with `color`.
+pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
+    let ctx = painter.ctx();
+    let side = rect.width().max(rect.height());
+    let px = (side * ctx.pixels_per_point()).round().max(8.0) as u32;
+    let (uri, _) = icon.source();
+    match ctx.try_load_texture(uri, TextureOptions::LINEAR, SizeHint::Size(px, px)) {
+        Ok(TexturePoll::Ready { texture }) => {
+            let square = Rect::from_center_size(rect.center(), Vec2::splat(side));
+            painter.image(
+                texture.id,
+                square,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                color,
+            );
+        }
+        Ok(TexturePoll::Pending { .. }) => ctx.request_repaint(),
+        Err(_) => {}
+    }
+}
+
+/// App icon (Heroicons camera, white on a blue rounded square) as straight RGBA.
+/// Used for the window/taskbar icon and the tray icon.
+pub fn app_icon_rgba(size: u32) -> Vec<u8> {
+    use resvg::{tiny_skia, usvg, usvg::TreeParsing};
+
+    let (_, camera) = Icon::Camera.source();
+    let camera = std::str::from_utf8(camera).unwrap_or_default();
+    let inner = camera
+        .find('>')
+        .and_then(|start| camera.rfind("</svg>").map(|end| &camera[start + 1..end]))
+        .unwrap_or_default();
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<rect width="24" height="24" rx="5.5" fill="#2563eb"/>
+<g transform="translate(3.6 3.6) scale(0.7)" fill="none" stroke="#ffffff" stroke-width="2">{inner}</g>
+</svg>"##
+    );
+
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    let Ok(tree) = usvg::Tree::from_str(&svg, &usvg::Options::default()) else {
+        return rgba;
+    };
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) else {
+        return rgba;
+    };
+    let scale = size as f32 / 24.0;
+    resvg::Tree::from_usvg(&tree).render(tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    for (dst, px) in rgba.chunks_exact_mut(4).zip(pixmap.pixels()) {
+        let c = px.demultiply();
+        dst.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    rgba
 }
 
 /// Renders an icon-only toolbar button with active state and tooltip.
@@ -370,7 +201,7 @@ pub fn icon_button(
                 egui::StrokeKind::Inside,
             );
         }
-        paint_icon(ui.painter(), rect.shrink(5.5), icon, fg);
+        paint_icon(ui.painter(), rect.shrink(5.0), icon, fg);
     }
 
     response.on_hover_text(tooltip)
@@ -384,13 +215,9 @@ pub fn icon_text_button(
     primary: bool,
 ) -> egui::Response {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        font_id,
-        Color32::WHITE,
-    );
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font_id, Color32::WHITE);
     let pad_x = 8.0;
-    let icon_sz = 15.0;
+    let icon_sz = 16.0;
     let gap = 5.0;
     let width = pad_x * 2.0 + icon_sz + gap + galley.size().x;
     let height = 28.0;
@@ -400,7 +227,7 @@ pub fn icon_text_button(
     if ui.is_rect_visible(rect) {
         let visuals = ui.visuals();
         let (bg, fg, border) = if primary {
-            let base = Color32::from_rgb(37, 99, 235); // Clean Tailwind blue-600
+            let base = Color32::from_rgb(37, 99, 235); // Tailwind blue-600
             let bg = if response.is_pointer_button_down_on() {
                 Color32::from_rgb(29, 78, 216)
             } else if response.hovered() {
@@ -430,10 +257,7 @@ pub fn icon_text_button(
         );
         paint_icon(ui.painter(), icon_rect, icon, fg);
 
-        let text_pos = Pos2::new(
-            icon_rect.max.x + gap,
-            rect.center().y - galley.size().y * 0.5,
-        );
+        let text_pos = Pos2::new(icon_rect.max.x + gap, rect.center().y - galley.size().y * 0.5);
         ui.painter().text(
             text_pos,
             egui::Align2::LEFT_TOP,
@@ -444,4 +268,32 @@ pub fn icon_text_button(
     }
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_icon_has_a_valid_heroicons_svg() {
+        for icon in Icon::ALL {
+            let (uri, bytes) = icon.source();
+            assert!(uri.starts_with("bytes://heroicons/") && uri.ends_with(".svg"));
+            let text = std::str::from_utf8(bytes).unwrap();
+            assert!(text.starts_with("<svg"), "{uri}");
+            assert!(!text.contains("currentColor"), "{uri} must be pre-coloured white");
+        }
+    }
+
+    #[test]
+    fn app_icon_is_opaque_blue_in_the_corner_area_and_has_white_glyph() {
+        let size = 32;
+        let rgba = app_icon_rgba(size);
+        assert_eq!(rgba.len(), (size * size * 4) as usize);
+        // Pixel near the top-left edge (inside the rounded square) is blue.
+        let i = ((4 * size + 8) * 4) as usize;
+        assert!(rgba[i + 2] > 200 && rgba[i + 3] == 255, "{:?}", &rgba[i..i + 4]);
+        // Some pixels are white (the camera stroke).
+        assert!(rgba.chunks_exact(4).any(|p| p[0] > 240 && p[1] > 240 && p[2] > 240 && p[3] > 240));
+    }
 }

@@ -70,6 +70,7 @@ mod win {
         DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW,
         PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW,
         TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, HHOOK, IDI_APPLICATION,
+        CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
         KBDLLHOOKSTRUCT, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
         TPM_RETURNCMD, WH_KEYBOARD_LL, WM_APP, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
         WM_LBUTTONUP, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
@@ -469,11 +470,16 @@ mod win {
                 return;
             }
 
-            // System tray icon with startup balloon notification
+            // System tray icon (Heroicons camera) with startup balloon notification
+            let tray_icon = app_hicon();
             let mut nid = base_nid(hwnd);
             nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_INFO;
             nid.uCallbackMessage = WM_TRAY;
-            nid.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+            nid.hIcon = if tray_icon.is_null() {
+                LoadIconW(null_mut(), IDI_APPLICATION)
+            } else {
+                tray_icon
+            };
             nid.dwInfoFlags = NIIF_INFO;
             copy_wide(&mut nid.szTip, "Z-SHOT");
             copy_wide(&mut nid.szInfoTitle, "Z-SHOT läuft im Hintergrund");
@@ -504,7 +510,59 @@ mod win {
                 }
             });
             Shell_NotifyIconW(NIM_DELETE, &nid);
+            if !tray_icon.is_null() {
+                DestroyIcon(tray_icon);
+            }
             DestroyWindow(hwnd);
+        }
+    }
+
+    /// Builds an HICON with alpha from the app icon at the system's small-icon size.
+    fn app_hicon() -> HICON {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateBitmap, CreateDIBSection, DeleteObject, GetDC, ReleaseDC, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        };
+        unsafe {
+            let size = GetSystemMetrics(SM_CXSMICON).clamp(16, 256);
+            let rgba = crate::icons::app_icon_rgba(size as u32);
+
+            let mut bmi: BITMAPINFO = std::mem::zeroed();
+            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bmi.bmiHeader.biWidth = size;
+            bmi.bmiHeader.biHeight = -size; // top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+
+            let hdc = GetDC(null_mut());
+            let mut bits: *mut core::ffi::c_void = null_mut();
+            let color = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            ReleaseDC(null_mut(), hdc);
+            if color.is_null() || bits.is_null() {
+                return null_mut();
+            }
+            let dst = std::slice::from_raw_parts_mut(bits as *mut u8, rgba.len());
+            for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+                d.copy_from_slice(&[s[2], s[1], s[0], s[3]]); // RGBA -> BGRA
+            }
+
+            // All-zero AND mask: transparency comes from the alpha channel.
+            let row_bytes = ((size + 15) / 16 * 2) as usize;
+            let mask_bits = vec![0u8; row_bytes * size as usize];
+            let mask = CreateBitmap(size, size, 1, 1, mask_bits.as_ptr() as *const _);
+
+            let info = ICONINFO {
+                fIcon: 1,
+                xHotspot: 0,
+                yHotspot: 0,
+                hbmMask: mask,
+                hbmColor: color,
+            };
+            let icon = CreateIconIndirect(&info);
+            DeleteObject(color);
+            DeleteObject(mask);
+            icon
         }
     }
 }

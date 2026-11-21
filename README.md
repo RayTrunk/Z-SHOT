@@ -25,3 +25,7 @@ Die Exe liegt danach unter `app/target/release/z-shot.exe`.
 Copyright (C) 2026 R. Trunk
 
 Dieses Programm ist freie Software: Sie können es unter den Bedingungen der GNU General Public License, wie von der Free Software Foundation veröffentlicht, weitergeben und/oder modifizieren, entweder gemäß Version 3 der Lizenz oder (nach Ihrer Wahl) jeder späteren Version. Den vollständigen Lizenztext finden Sie in [LICENSE](LICENSE).
+
+## Drittanbieter
+
+- Icons: [Heroicons](https://heroicons.com) v2.2.0, © Tailwind Labs, Inc., MIT-Lizenz (siehe `app/assets/heroicons/LICENSE`)

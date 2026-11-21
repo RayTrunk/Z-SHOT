@@ -1,7 +1,8 @@
 // Z-SHOT — Copyright (C) 2026 R. Trunk
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// GUI app on all build profiles: no console window, also for debug builds.
+#![windows_subsystem = "windows"]
 
 mod background;
 mod capture;
@@ -380,7 +381,14 @@ struct ZShotApp {
     autostart: bool,
     /// The editor was visible when the capture started, so return to it afterwards.
     capture_from_editor: bool,
+    /// eframe force-shows the window after the first frame; we hide it again once.
+    startup_hidden: bool,
+    /// The window starts off-screen; it is moved onto the monitor the first time it is shown.
+    window_placed: bool,
 }
+
+/// Off-screen start position, so eframe's forced first-frame show is never visible.
+const OFFSCREEN_POS: [f32; 2] = [-32000.0, -32000.0];
 
 impl ZShotApp {
     fn new(
@@ -388,6 +396,7 @@ impl ZShotApp {
         screenshot_target: Option<PathBuf>,
         open_settings: bool,
     ) -> Self {
+        icons::install(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
         let dark_mode = true;
         apply_theme(&cc.egui_ctx, dark_mode);
@@ -475,6 +484,8 @@ impl ZShotApp {
             hotkey_status: Vec::new(),
             autostart: settings::autostart_enabled(),
             capture_from_editor: false,
+            startup_hidden: initial_mode != AppMode::Background,
+            window_placed: initial_mode != AppMode::Background,
         }
     }
 
@@ -523,6 +534,14 @@ impl ZShotApp {
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(1280.0, 800.0)));
+        if !self.window_placed {
+            self.window_placed = true;
+            let monitor = ctx
+                .input(|i| i.viewport().monitor_size)
+                .unwrap_or(Vec2::new(1920.0, 1080.0));
+            let pos = ((monitor - Vec2::new(1280.0, 840.0)) * 0.5).max(Vec2::ZERO);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos.to_pos2()));
+        }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.fit_requested = true;
@@ -557,6 +576,10 @@ impl ZShotApp {
         self.overlay_drag_curr = None;
         self.mode = AppMode::RegionOverlay;
 
+        if !self.window_placed {
+            // Fullscreen uses the window's current monitor: bring it onto the primary one.
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
+        }
         ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
@@ -947,7 +970,7 @@ impl ZShotApp {
                     }
 
                     // Primary capture action: Region overlay capture
-                    if icon_text_button(ui, Icon::Crop, "Bereich", true)
+                    if icon_text_button(ui, Icon::Region, "Bereich", true)
                         .on_hover_text(format!("Bereich auf dem Bildschirm markieren ({})", self.settings.region_hotkeys_label()))
                         .clicked()
                     {
@@ -2199,6 +2222,12 @@ impl eframe::App for ZShotApp {
 
         match self.mode {
             AppMode::Background => {
+                if !self.startup_hidden {
+                    // eframe shows the window after the first frame regardless of
+                    // `with_visible(false)`; it is off-screen, hide it again right away.
+                    self.startup_hidden = true;
+                    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                }
                 // Keep waking gently so background tray/hotkey events are processed immediately
                 ctx.request_repaint_after(Duration::from_millis(200));
                 return;
@@ -2273,6 +2302,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut viewport = ViewportBuilder::default()
         .with_title("Z-SHOT")
+        .with_icon(std::sync::Arc::new(egui::IconData {
+            rgba: icons::app_icon_rgba(64),
+            width: 64,
+            height: 64,
+        }))
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([860.0, 560.0]);
 
@@ -2285,8 +2319,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         #[cfg(target_os = "windows")]
         {
-            // Start quietly in the background (tray icon + global hotkeys active)
-            viewport = viewport.with_visible(false);
+            // Start quietly in the background (tray icon + global hotkeys active).
+            // Off-screen as well, because eframe force-shows the window after frame 1.
+            viewport = viewport.with_visible(false).with_position(OFFSCREEN_POS);
         }
     }
 
