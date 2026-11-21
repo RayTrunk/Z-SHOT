@@ -131,26 +131,16 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     }
 }
 
-/// App icon (Heroicons camera, white on a blue rounded square) as straight RGBA.
-/// Used for the window/taskbar icon and the tray icon.
+/// The Z-SHOT app icon: Heroicons viewfinder corners + amber bolt ("Z") on dark slate.
+/// Same file `build.rs` embeds as the executable icon.
+pub const APP_ICON_SVG: &str = include_str!("../assets/z-shot-icon.svg");
+
+/// App icon as straight RGBA, for the window/taskbar icon and the tray icon.
 pub fn app_icon_rgba(size: u32) -> Vec<u8> {
     use resvg::{tiny_skia, usvg, usvg::TreeParsing};
 
-    let (_, camera) = Icon::Camera.source();
-    let camera = std::str::from_utf8(camera).unwrap_or_default();
-    let inner = camera
-        .find('>')
-        .and_then(|start| camera.rfind("</svg>").map(|end| &camera[start + 1..end]))
-        .unwrap_or_default();
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-<rect width="24" height="24" rx="5.5" fill="#2563eb"/>
-<g transform="translate(3.6 3.6) scale(0.7)" fill="none" stroke="#ffffff" stroke-width="2">{inner}</g>
-</svg>"##
-    );
-
     let mut rgba = vec![0u8; (size * size * 4) as usize];
-    let Ok(tree) = usvg::Tree::from_str(&svg, &usvg::Options::default()) else {
+    let Ok(tree) = usvg::Tree::from_str(APP_ICON_SVG, &usvg::Options::default()) else {
         return rgba;
     };
     let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) else {
@@ -286,14 +276,22 @@ mod tests {
     }
 
     #[test]
-    fn app_icon_is_opaque_blue_in_the_corner_area_and_has_white_glyph() {
-        let size = 32;
+    fn app_icon_has_dark_tile_blue_corners_and_amber_bolt() {
+        let size = 64;
         let rgba = app_icon_rgba(size);
         assert_eq!(rgba.len(), (size * size * 4) as usize);
-        // Pixel near the top-left edge (inside the rounded square) is blue.
-        let i = ((4 * size + 8) * 4) as usize;
-        assert!(rgba[i + 2] > 200 && rgba[i + 3] == 255, "{:?}", &rgba[i..i + 4]);
-        // Some pixels are white (the camera stroke).
-        assert!(rgba.chunks_exact(4).any(|p| p[0] > 240 && p[1] > 240 && p[2] > 240 && p[3] > 240));
+        let px = |x: u32, y: u32| {
+            let i = ((y * size + x) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+        };
+        // Outer corner is transparent (rounded tile), tile itself is opaque dark slate.
+        assert_eq!(px(0, 0)[3], 0);
+        let tile = px(32, 6);
+        assert!(tile[3] == 255 && tile[0] < 40 && tile[2] < 60, "{tile:?}");
+        // Centre of the bolt is amber (#f59e0b).
+        let bolt = px(32, 32);
+        assert!(bolt[0] > 200 && bolt[1] > 120 && bolt[2] < 60, "{bolt:?}");
+        // Some pixels are the blue viewfinder stroke (#60a5fa).
+        assert!(rgba.chunks_exact(4).any(|p| p[2] > 220 && p[0] < 130 && p[3] > 200));
     }
 }

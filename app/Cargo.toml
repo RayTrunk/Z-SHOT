@@ -28,3 +28,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+resvg = { version = "0.37", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+embed-resource = "3"
