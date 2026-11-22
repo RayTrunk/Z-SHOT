@@ -2031,14 +2031,26 @@ impl ZShotApp {
 
         let mut open = true;
         let mut close_clicked = false;
+        // Square, and never larger than the editor: the content scrolls instead of
+        // hanging off the window's bottom edge.
+        let screen = ctx.screen_rect();
+        let side = 600.0_f32
+            .min(screen.width() - 40.0)
+            .min(screen.height() - 80.0)
+            .max(300.0);
         egui::Window::new("Einstellungen")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(520.0)
+            .fixed_size([side, side])
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
+                let footer_h = 34.0;
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - footer_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
 
                 // --- Hotkeys -------------------------------------------------
                 ui.label(RichText::new("Tastenkürzel").strong().size(15.0));
@@ -2246,8 +2258,9 @@ impl ZShotApp {
                     .weak()
                     .size(12.0),
                 );
+                    });
 
-                ui.add_space(4.0);
+                ui.separator();
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Schließen").clicked() {
                         close_clicked = true;
