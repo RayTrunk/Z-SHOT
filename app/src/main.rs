@@ -26,6 +26,7 @@ use model::{
     save_album_index, spawn_album_image_loader, Annotation, ShotItem, Tool,
 };
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -389,6 +390,10 @@ struct ZShotApp {
     editor_place: Option<window::Placement>,
     /// A full-screen capture (instead of region) waits for the editor to move away.
     pending_full_capture: bool,
+    /// Album entries picked with Ctrl+click (ids), in addition to `selected`.
+    marked: HashSet<String>,
+    /// Entries waiting for the user to confirm their deletion (ids).
+    confirm_delete: Option<Vec<String>>,
 }
 
 /// Off-screen start position, so eframe's forced first-frame show is never visible.
@@ -438,6 +443,8 @@ impl ZShotApp {
             None
         };
 
+        // The examples are only for the very first start: an album the user emptied stays empty.
+        let first_start = !persist || !album_path.join("album.json").exists();
         let mut items = if persist {
             load_album_index(&album_path)
         } else {
@@ -448,7 +455,7 @@ impl ZShotApp {
             spawn_album_image_loader(album_path.clone(), ids, cc.egui_ctx.clone())
         });
 
-        if items.is_empty() {
+        if items.is_empty() && first_start {
             items = create_demo_items();
             if persist {
                 let _ = save_album(&album_path, &items);
@@ -507,6 +514,110 @@ impl ZShotApp {
             capture_from_editor: false,
             editor_place: None,
             pending_full_capture: false,
+            marked: HashSet::new(),
+            confirm_delete: None,
+        }
+    }
+
+    /// The entries a "delete selection" acts on: the Ctrl+click picks, or else the
+    /// entry shown in the editor.
+    fn selection_ids(&self) -> Vec<String> {
+        if self.marked.is_empty() {
+            self.items
+                .get(self.selected)
+                .map(|it| vec![it.meta.id.clone()])
+                .unwrap_or_default()
+        } else {
+            self.items
+                .iter()
+                .filter(|it| self.marked.contains(&it.meta.id))
+                .map(|it| it.meta.id.clone())
+                .collect()
+        }
+    }
+
+    /// Removes the entries from the album and their images from disk.
+    fn delete_items(&mut self, ids: &[String]) {
+        let shown_id = self.items.get(self.selected).map(|it| it.meta.id.clone());
+        let before = self.items.len();
+        self.items.retain(|it| !ids.contains(&it.meta.id));
+        let removed = before - self.items.len();
+        if removed == 0 {
+            return;
+        }
+        if self.persist {
+            for id in ids {
+                let path = item_image_path(&self.album_path, id);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => log::log(format!("Bild nicht gelöscht: {} ({e})", path.display())),
+                }
+            }
+        }
+        // Stay on the shown entry if it survived, else on its neighbour.
+        self.selected = shown_id
+            .and_then(|id| self.items.iter().position(|it| it.meta.id == id))
+            .unwrap_or_else(|| self.selected.min(self.items.len().saturating_sub(1)));
+        self.marked.retain(|id| !ids.contains(id));
+        self.selected_annotation = None;
+        self.crop_rect = None;
+        self.fit_requested = true;
+        self.pan = Vec2::ZERO;
+        self.persist_album();
+        self.set_status(if removed == 1 {
+            "Screenshot gelöscht".to_string()
+        } else {
+            format!("{removed} Screenshots gelöscht")
+        });
+    }
+
+    /// Asks before deleting what `confirm_delete` holds.
+    fn draw_delete_confirm(&mut self, ctx: &egui::Context) {
+        let Some(ids) = &self.confirm_delete else {
+            return;
+        };
+        let count = ids.len();
+        let question = if count == self.items.len() && count > 1 {
+            format!("Alle {count} Screenshots löschen?")
+        } else if count == 1 {
+            let title = self
+                .items
+                .iter()
+                .find(|it| it.meta.id == ids[0])
+                .map(|it| it.meta.title.as_str())
+                .unwrap_or("");
+            format!("Screenshot „{title}“ löschen?")
+        } else {
+            format!("{count} ausgewählte Screenshots löschen?")
+        };
+        let mut confirmed = false;
+        let mut cancelled = false;
+        let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.label(RichText::new(question).strong().size(14.0));
+            ui.add_space(4.0);
+            ui.label(RichText::new("Die Bilder werden endgültig entfernt.").weak());
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let delete = egui::Button::new(
+                    RichText::new("Löschen").color(Color32::WHITE),
+                )
+                .fill(Color32::from_rgb(220, 38, 38));
+                if ui.add(delete).clicked() {
+                    confirmed = true;
+                }
+                if ui.button("Abbrechen").clicked() {
+                    cancelled = true;
+                }
+            });
+        });
+        if confirmed {
+            if let Some(ids) = self.confirm_delete.take() {
+                self.delete_items(&ids);
+            }
+        } else if cancelled || modal.should_close() {
+            self.confirm_delete = None;
         }
     }
 
@@ -1075,6 +1186,9 @@ impl ZShotApp {
                     self.persist_album();
                     self.set_status("Markierung gelöscht");
                 }
+            } else if self.confirm_delete.is_none() && !self.items.is_empty() {
+                // No marking picked: Del deletes the selected screenshot(s), after asking.
+                self.confirm_delete = Some(self.selection_ids());
             }
         }
         if trigger_escape {
@@ -1298,6 +1412,30 @@ impl ZShotApp {
                         self.only_favorites = true;
                     }
                 });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let picked = self.selection_ids().len();
+                    let has_items = !self.items.is_empty();
+                    let label = if self.marked.is_empty() {
+                        "Auswahl löschen".to_string()
+                    } else {
+                        format!("Auswahl löschen ({picked})")
+                    };
+                    if ui
+                        .add_enabled(has_items, egui::Button::new(label).small())
+                        .on_hover_text("Löscht das gewählte Bild. Mit Strg+Klick mehrere Bilder auswählen.")
+                        .clicked()
+                    {
+                        self.confirm_delete = Some(self.selection_ids());
+                    }
+                    if ui
+                        .add_enabled(has_items, egui::Button::new("Alle löschen").small())
+                        .clicked()
+                    {
+                        self.confirm_delete =
+                            Some(self.items.iter().map(|it| it.meta.id.clone()).collect());
+                    }
+                });
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -1305,6 +1443,8 @@ impl ZShotApp {
                 let mut delete_idx: Option<usize> = None;
                 let mut toggle_fav_idx: Option<usize> = None;
                 let mut select_idx: Option<usize> = None;
+                let mut mark_idx: Option<usize> = None;
+                let ctrl_held = ui.input(|i| i.modifiers.command);
 
                 let avail_h = (ui.available_height() - 125.0).max(120.0);
                 egui::ScrollArea::vertical()
@@ -1330,7 +1470,12 @@ impl ZShotApp {
 
                         for idx in matching {
                             Self::ensure_texture(ctx, &mut self.items[idx]);
-                            let is_sel = idx == self.selected;
+                            let is_sel = idx == self.selected
+                                || self.marked.contains(&self.items[idx].meta.id);
+                            // Where the icons sit; the card's own click is dispatched by
+                            // pointer position (see below).
+                            let mut del_rect = Rect::NOTHING;
+                            let mut fav_rect = Rect::NOTHING;
                             let bg = if is_sel {
                                 ui.visuals().selection.bg_fill
                             } else {
@@ -1357,14 +1502,10 @@ impl ZShotApp {
                                         let aspect = (self.items[idx].meta.height as f32
                                             / self.items[idx].meta.width.max(1) as f32)
                                             .clamp(0.4, 0.72);
-                                        let img_resp = ui.add(
+                                        ui.add(
                                             egui::Image::new((tex.id(), Vec2::new(w, w * aspect)))
-                                                .corner_radius(CornerRadius::same(4))
-                                                .sense(Sense::click()),
+                                                .corner_radius(CornerRadius::same(4)),
                                         );
-                                        if img_resp.clicked() {
-                                            select_idx = Some(idx);
-                                        }
                                     }
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
@@ -1391,28 +1532,27 @@ impl ZShotApp {
                                             );
                                         });
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            let (del_r, del_resp) = ui.allocate_exact_size(
+                                            let (del_r, _) = ui.allocate_exact_size(
                                                 Vec2::splat(22.0),
-                                                Sense::click(),
+                                                Sense::hover(),
                                             );
+                                            del_rect = del_r;
                                             paint_icon(
                                                 ui.painter(),
                                                 del_r.shrink(3.0),
                                                 Icon::Trash,
-                                                if del_resp.hovered() {
+                                                if ui.rect_contains_pointer(del_r) {
                                                     Color32::from_rgb(239, 68, 68)
                                                 } else {
                                                     ui.visuals().weak_text_color()
                                                 },
                                             );
-                                            if del_resp.on_hover_text("Löschen").clicked() {
-                                                delete_idx = Some(idx);
-                                            }
 
-                                            let (fav_r, fav_resp) = ui.allocate_exact_size(
+                                            let (fav_r, _) = ui.allocate_exact_size(
                                                 Vec2::splat(22.0),
-                                                Sense::click(),
+                                                Sense::hover(),
                                             );
+                                            fav_rect = fav_r;
                                             let fav = self.items[idx].meta.favorite;
                                             paint_icon(
                                                 ui.painter(),
@@ -1420,25 +1560,62 @@ impl ZShotApp {
                                                 if fav { Icon::StarSolid } else { Icon::Star },
                                                 if fav {
                                                     Color32::from_rgb(245, 158, 11)
+                                                } else if ui.rect_contains_pointer(fav_r) {
+                                                    ui.visuals().strong_text_color()
                                                 } else {
                                                     ui.visuals().weak_text_color()
                                                 },
                                             );
-                                            if fav_resp.on_hover_text("Favorit").clicked() {
-                                                toggle_fav_idx = Some(idx);
-                                            }
                                         });
                                     });
                                 });
 
-                            if frame_resp.response.interact(Sense::click()).clicked() {
-                                select_idx = Some(idx);
+                            // The card's click area is registered last, so it lies on top
+                            // of the icons and receives their clicks too. Dispatch by
+                            // where the pointer is instead of giving the icons own senses.
+                            let card = frame_resp.response.interact(Sense::click());
+                            let pointer = card.interact_pointer_pos().or(card.hover_pos());
+                            let over_del = pointer.is_some_and(|p| del_rect.contains(p));
+                            let over_fav = pointer.is_some_and(|p| fav_rect.contains(p));
+                            let card = if over_del {
+                                card.on_hover_text("Löschen")
+                            } else if over_fav {
+                                card.on_hover_text("Favorit")
+                            } else {
+                                card
+                            };
+                            if card.clicked() {
+                                if over_del {
+                                    delete_idx = Some(idx);
+                                } else if over_fav {
+                                    toggle_fav_idx = Some(idx);
+                                } else if ctrl_held {
+                                    mark_idx = Some(idx);
+                                } else {
+                                    select_idx = Some(idx);
+                                }
                             }
                             ui.add_space(6.0);
                         }
                     });
 
+                if let Some(i) = mark_idx {
+                    // Ctrl+click: the shown entry joins the selection, the clicked one toggles.
+                    if self.marked.is_empty() {
+                        if let Some(shown) = self.items.get(self.selected) {
+                            self.marked.insert(shown.meta.id.clone());
+                        }
+                    }
+                    let id = self.items[i].meta.id.clone();
+                    if !self.marked.remove(&id) {
+                        self.marked.insert(id);
+                        select_idx = Some(i);
+                    }
+                }
                 if let Some(i) = select_idx {
+                    if mark_idx.is_none() {
+                        self.marked.clear();
+                    }
                     self.selected = i;
                     self.selected_annotation = None;
                     self.crop_rect = None;
@@ -1452,18 +1629,8 @@ impl ZShotApp {
                     }
                 }
                 if let Some(i) = delete_idx {
-                    if self.items.len() > 1 {
-                        self.items.remove(i);
-                        if self.selected >= self.items.len() {
-                            self.selected = self.items.len() - 1;
-                        }
-                        self.selected_annotation = None;
-                        self.fit_requested = true;
-                        self.persist_album();
-                        self.set_status("Screenshot gelöscht");
-                    } else {
-                        self.set_status("Letzter Eintrag bleibt erhalten");
-                    }
+                    // The bin asks to delete its own card (the Ctrl+click picks stay).
+                    self.confirm_delete = Some(vec![self.items[i].meta.id.clone()]);
                 }
 
                 ui.separator();
@@ -2054,6 +2221,32 @@ impl ZShotApp {
                     self.autostart = settings::autostart_enabled();
                 }
 
+                ui.separator();
+
+                // --- About ---------------------------------------------------
+                ui.label(RichText::new("Über Z-SHOT").strong().size(15.0));
+                ui.label(format!(
+                    "Z-SHOT Version {}  ·  © 2026 R. Trunk",
+                    env!("CARGO_PKG_VERSION")
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label("Lizenz: ");
+                    ui.hyperlink_to(
+                        "GNU General Public License v3 oder neuer",
+                        "https://www.gnu.org/licenses/gpl-3.0.html",
+                    );
+                });
+                ui.label(
+                    RichText::new(
+                        "Freie Software: Sie dürfen sie unter den Bedingungen der GPL \
+                         weitergeben und verändern. Sie wird ohne jede Gewährleistung \
+                         bereitgestellt.",
+                    )
+                    .weak()
+                    .size(12.0),
+                );
+
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Schließen").clicked() {
@@ -2446,6 +2639,7 @@ impl eframe::App for ZShotApp {
                 self.draw_sidebar(ctx);
                 self.draw_canvas(ctx);
                 self.draw_settings_window(ctx);
+                self.draw_delete_confirm(ctx);
             }
         }
 

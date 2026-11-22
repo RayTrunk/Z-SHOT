@@ -12,6 +12,7 @@ const SIZES: [u32; 6] = [16, 24, 32, 48, 64, 256];
 fn main() {
     println!("cargo:rerun-if-changed={SVG}");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml"); // version for the file details
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -25,11 +26,50 @@ fn main() {
 
     let rc_path = out.join("z-shot.rc");
     let ico = ico_path.display().to_string().replace('\\', "\\\\");
-    std::fs::write(&rc_path, format!("1 ICON \"{ico}\"\n")).expect("write .rc");
+    let rc = format!("1 ICON \"{ico}\"\n\n{}", version_info());
+    std::fs::write(&rc_path, rc).expect("write .rc");
 
     embed_resource::compile(&rc_path, embed_resource::NONE)
         .manifest_optional()
         .expect("embed icon resource");
+}
+
+/// Version, copyright and licence for Explorer's "Properties › Details" tab.
+/// Plain ASCII on purpose: the resource compiler reads the file in the ANSI codepage.
+fn version_info() -> String {
+    let version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
+    let mut parts = version
+        .split(['.', '-', '+'])
+        .map(|p| p.parse::<u16>().unwrap_or(0));
+    let [major, minor, patch] = [(); 3].map(|_| parts.next().unwrap_or(0));
+    format!(
+        r#"1 VERSIONINFO
+FILEVERSION {major},{minor},{patch},0
+PRODUCTVERSION {major},{minor},{patch},0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040704B0"
+    BEGIN
+      VALUE "CompanyName", "R. Trunk"
+      VALUE "FileDescription", "Z-SHOT Screenshot-Werkzeug"
+      VALUE "FileVersion", "{version}"
+      VALUE "InternalName", "z-shot"
+      VALUE "LegalCopyright", "Copyright (C) 2026 R. Trunk - GPL-3.0-or-later"
+      VALUE "OriginalFilename", "z-shot.exe"
+      VALUE "ProductName", "Z-SHOT"
+      VALUE "ProductVersion", "{version}"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0407, 1200
+  END
+END
+"#
+    )
 }
 
 /// ICO container with one PNG-compressed 32-bit image per size.

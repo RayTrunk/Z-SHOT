@@ -3,7 +3,7 @@ name = "z-shot"
 authors = ["R. Trunk"]
 license = "GPL-3.0-or-later"
 description = "Z-SHOT — Screenshot-Werkzeug mit Bereichsauswahl, Markierungen und Album"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2021"
 
 [dependencies]
