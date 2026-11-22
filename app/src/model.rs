@@ -102,6 +102,24 @@ pub struct ShotMeta {
     pub annotations: Vec<Annotation>,
 }
 
+/// How `created_at` is stored in album.json (independent of the UI language).
+const CREATED_AT_FORMAT: &str = "%d.%m.%Y %H:%M";
+
+impl ShotMeta {
+    /// `created_at` for display: "22.11.2026 14:29" in German, "Nov 22, 2026 2:29 PM"
+    /// in English. Unreadable values are shown as stored.
+    pub fn created_label(&self) -> String {
+        format_created(&self.created_at, crate::i18n::lang())
+    }
+}
+
+fn format_created(stored: &str, lang: crate::i18n::Lang) -> String {
+    match (lang, chrono::NaiveDateTime::parse_from_str(stored, CREATED_AT_FORMAT)) {
+        (crate::i18n::Lang::En, Ok(at)) => at.format("%b %-d, %Y %-I:%M %p").to_string(),
+        _ => stored.to_string(),
+    }
+}
+
 pub struct ShotItem {
     pub meta: ShotMeta,
     pub image: RgbaImage,
@@ -112,7 +130,7 @@ pub struct ShotItem {
 
 impl ShotItem {
     pub fn new(id: String, title: String, notes: String, image: RgbaImage) -> Self {
-        let now = chrono::Local::now().format("%d.%m.%Y %H:%M").to_string();
+        let now = chrono::Local::now().format(CREATED_AT_FORMAT).to_string();
         let meta = ShotMeta {
             id,
             title,
@@ -233,6 +251,7 @@ impl ShotItem {
         self.meta.title.to_lowercase().contains(&q)
             || self.meta.notes.to_lowercase().contains(&q)
             || self.meta.created_at.to_lowercase().contains(&q)
+            || self.meta.created_label().to_lowercase().contains(&q)
             || self.meta.annotations.iter().any(|a| match a {
                 Annotation::Text { text, .. } => text.to_lowercase().contains(&q),
                 _ => false,
@@ -436,4 +455,18 @@ pub fn spawn_album_image_loader(
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_created;
+    use crate::i18n::Lang;
+
+    #[test]
+    fn created_date_follows_the_language() {
+        assert_eq!(format_created("22.11.2026 14:29", Lang::De), "22.11.2026 14:29");
+        assert_eq!(format_created("22.11.2026 14:29", Lang::En), "Nov 22, 2026 2:29 PM");
+        assert_eq!(format_created("01.03.2026 09:05", Lang::En), "Mar 1, 2026 9:05 AM");
+        assert_eq!(format_created("kaputt", Lang::En), "kaputt");
+    }
 }

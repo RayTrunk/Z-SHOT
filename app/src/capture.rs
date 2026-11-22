@@ -18,23 +18,23 @@ pub fn capture_primary_screen() -> Result<RgbaImage, String> {
         let width = GetSystemMetrics(SM_CXSCREEN);
         let height = GetSystemMetrics(SM_CYSCREEN);
         if width <= 0 || height <= 0 {
-            return Err("Bildschirmgröße konnte nicht ermittelt werden".into());
+            return Err(crate::i18n::tr("Bildschirmgröße konnte nicht ermittelt werden", "Could not determine the screen size").into());
         }
 
         let hdc_screen = GetDC(std::ptr::null_mut());
         if hdc_screen.is_null() {
-            return Err("GetDC fehlgeschlagen".into());
+            return Err(crate::i18n::tr("GetDC fehlgeschlagen", "GetDC failed").into());
         }
         let hdc_mem = CreateCompatibleDC(hdc_screen);
         if hdc_mem.is_null() {
             ReleaseDC(std::ptr::null_mut(), hdc_screen);
-            return Err("CreateCompatibleDC fehlgeschlagen".into());
+            return Err(crate::i18n::tr("CreateCompatibleDC fehlgeschlagen", "CreateCompatibleDC failed").into());
         }
         let hbm = CreateCompatibleBitmap(hdc_screen, width, height);
         if hbm.is_null() {
             DeleteDC(hdc_mem);
             ReleaseDC(std::ptr::null_mut(), hdc_screen);
-            return Err("CreateCompatibleBitmap fehlgeschlagen".into());
+            return Err(crate::i18n::tr("CreateCompatibleBitmap fehlgeschlagen", "CreateCompatibleBitmap failed").into());
         }
 
         let old = SelectObject(hdc_mem, hbm);
@@ -78,7 +78,7 @@ pub fn capture_primary_screen() -> Result<RgbaImage, String> {
         ReleaseDC(std::ptr::null_mut(), hdc_screen);
 
         if lines == 0 {
-            return Err("Bildschirmaufnahme (GetDIBits) fehlgeschlagen".into());
+            return Err(crate::i18n::tr("Bildschirmaufnahme (GetDIBits) fehlgeschlagen", "Screen capture (GetDIBits) failed").into());
         }
 
         // Convert BGRA -> RGBA with full alpha
@@ -88,7 +88,7 @@ pub fn capture_primary_screen() -> Result<RgbaImage, String> {
         }
 
         RgbaImage::from_raw(width as u32, height as u32, buf)
-            .ok_or_else(|| "Bildpuffer ungültig".into())
+            .ok_or_else(|| crate::i18n::tr("Bildpuffer ungültig", "Invalid image buffer").into())
     }
 }
 

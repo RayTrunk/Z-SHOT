@@ -4,6 +4,7 @@
 //! User settings: global hotkeys, what happens after a capture, save folder, autostart.
 //! Persisted as `settings.json` next to the album in `%LOCALAPPDATA%\Z-SHOT`.
 
+use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -29,10 +30,10 @@ impl Hotkey {
     pub fn label(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.ctrl {
-            parts.push("Strg".into());
+            parts.push(tr("Strg", "Ctrl").into());
         }
         if self.shift {
-            parts.push("Umschalt".into());
+            parts.push(tr("Umschalt", "Shift").into());
         }
         if self.alt {
             parts.push("Alt".into());
@@ -48,24 +49,24 @@ impl Hotkey {
 /// German names for Win32 virtual-key codes.
 pub fn vk_name(vk: u32) -> String {
     match vk {
-        0x08 => "Rücktaste".into(),
+        0x08 => tr("Rücktaste", "Backspace").into(),
         0x09 => "Tab".into(),
-        0x0D => "Eingabe".into(),
+        0x0D => tr("Eingabe", "Enter").into(),
         0x13 => "Pause".into(),
-        0x14 => "Feststell".into(),
+        0x14 => tr("Feststell", "Caps Lock").into(),
         0x1B => "Esc".into(),
-        0x20 => "Leertaste".into(),
-        0x21 => "Bild↑".into(),
-        0x22 => "Bild↓".into(),
-        0x23 => "Ende".into(),
-        0x24 => "Pos1".into(),
-        0x25 => "Links".into(),
-        0x26 => "Oben".into(),
-        0x27 => "Rechts".into(),
-        0x28 => "Unten".into(),
-        0x2C => "Druck".into(),
-        0x2D => "Einfg".into(),
-        0x2E => "Entf".into(),
+        0x20 => tr("Leertaste", "Space").into(),
+        0x21 => tr("Bild↑", "Page Up").into(),
+        0x22 => tr("Bild↓", "Page Down").into(),
+        0x23 => tr("Ende", "End").into(),
+        0x24 => tr("Pos1", "Home").into(),
+        0x25 => tr("Links", "Left").into(),
+        0x26 => tr("Oben", "Up").into(),
+        0x27 => tr("Rechts", "Right").into(),
+        0x28 => tr("Unten", "Down").into(),
+        0x2C => tr("Druck", "Print").into(),
+        0x2D => tr("Einfg", "Insert").into(),
+        0x2E => tr("Entf", "Del").into(),
         0x30..=0x39 | 0x41..=0x5A => char::from_u32(vk).map(String::from).unwrap_or_default(),
         0x60..=0x69 => format!("Num {}", vk - 0x60),
         0x6A => "Num *".into(),
@@ -74,7 +75,7 @@ pub fn vk_name(vk: u32) -> String {
         0x6E => "Num ,".into(),
         0x6F => "Num /".into(),
         0x70..=0x87 => format!("F{}", vk - 0x6F),
-        0x91 => "Rollen".into(),
+        0x91 => tr("Rollen", "Scroll Lock").into(),
         0xBA => "Ü".into(),
         0xBB => "+".into(),
         0xBC => ",".into(),
@@ -87,7 +88,7 @@ pub fn vk_name(vk: u32) -> String {
         0xDD => "´".into(),
         0xDE => "Ä".into(),
         0xE2 => "<".into(),
-        other => format!("Taste 0x{:02X}", other),
+        other => tr(format!("Taste 0x{:02X}", other), format!("Key 0x{:02X}", other)),
     }
 }
 
@@ -114,9 +115,9 @@ impl HotkeyAction {
 
     pub fn title(self) -> &'static str {
         match self {
-            HotkeyAction::Region => "Bereich aufnehmen",
-            HotkeyAction::RegionAlt => "Bereich aufnehmen (alternativ)",
-            HotkeyAction::Full => "Vollbild aufnehmen",
+            HotkeyAction::Region => tr("Bereich aufnehmen", "Capture region"),
+            HotkeyAction::RegionAlt => tr("Bereich aufnehmen (alternativ)", "Capture region (alternative)"),
+            HotkeyAction::Full => tr("Vollbild aufnehmen", "Capture fullscreen"),
         }
     }
 }
@@ -208,7 +209,7 @@ impl Settings {
             .map(|h| h.label())
             .collect();
         if labels.is_empty() {
-            "kein Tastenkürzel".into()
+            tr("kein Tastenkürzel", "no hotkey").into()
         } else {
             labels.join(" / ")
         }
@@ -366,7 +367,7 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     if status == 0 {
         Ok(())
     } else {
-        Err(format!("Registry-Fehler {status}"))
+        Err(tr(format!("Registry-Fehler {status}"), format!("Registry error {status}")))
     }
 }
 
@@ -377,7 +378,7 @@ pub fn autostart_enabled() -> bool {
 
 #[cfg(not(windows))]
 pub fn set_autostart(_enabled: bool) -> Result<(), String> {
-    Err("Autostart wird nur unter Windows unterstützt".into())
+    Err(tr("Autostart wird nur unter Windows unterstützt", "Autostart is only supported on Windows").into())
 }
 
 #[cfg(test)]
@@ -422,9 +423,9 @@ mod tests {
 
     #[test]
     fn hotkey_labels_are_german() {
-        assert_eq!(Hotkey::key(VK_SNAPSHOT).label(), "Druck");
+        assert_eq!(Hotkey::key(VK_SNAPSHOT).label(), tr("Druck", "Print"));
         let hk = Hotkey { ctrl: true, shift: true, ..Hotkey::key(b'S' as u32) };
-        assert_eq!(hk.label(), "Strg+Umschalt+S");
+        assert_eq!(hk.label(), tr("Strg+Umschalt+S", "Ctrl+Shift+S"));
         assert_eq!(Hotkey { alt: true, ..Hotkey::key(0x70) }.label(), "Alt+F1");
     }
 

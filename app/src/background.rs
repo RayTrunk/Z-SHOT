@@ -188,9 +188,9 @@ mod win {
         nid.uFlags = NIF_TIP;
         let keys = region_label(bindings);
         let tip = if keys.is_empty() {
-            "Z-SHOT — Klick auf das Symbol für Bereich".to_string()
+            crate::i18n::tr("Z-SHOT — Klick auf das Symbol für Bereich", "Z-SHOT — click the icon for a region").to_string()
         } else {
-            format!("Z-SHOT — {keys} für Bereich")
+            crate::i18n::tr(format!("Z-SHOT — {keys} für Bereich"), format!("Z-SHOT — {keys} for a region"))
         };
         copy_wide(&mut nid.szTip, &tip);
         unsafe {
@@ -406,15 +406,15 @@ mod win {
             cell.borrow().as_ref().map(|st| region_label(&st.bindings)).unwrap_or_default()
         });
         let region_text = if keys.is_empty() {
-            "Bereich aufnehmen".to_string()
+            crate::i18n::tr("Bereich aufnehmen", "Capture region").to_string()
         } else {
-            format!("Bereich aufnehmen ({keys})")
+            crate::i18n::tr(format!("Bereich aufnehmen ({keys})"), format!("Capture region ({keys})"))
         };
         let s_region = to_wide(&region_text);
-        let s_full = to_wide("Vollbild aufnehmen");
-        let s_show = to_wide("Oberfläche öffnen");
-        let s_settings = to_wide("Einstellungen…");
-        let s_quit = to_wide("Beenden");
+        let s_full = to_wide(crate::i18n::tr("Vollbild aufnehmen", "Capture fullscreen"));
+        let s_show = to_wide(crate::i18n::tr("Oberfläche öffnen", "Open window"));
+        let s_settings = to_wide(crate::i18n::tr("Einstellungen…", "Settings…"));
+        let s_quit = to_wide(crate::i18n::tr("Beenden", "Quit"));
         AppendMenuW(hmenu, MF_STRING, CMD_REGION, s_region.as_ptr());
         AppendMenuW(hmenu, MF_STRING, CMD_FULL, s_full.as_ptr());
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
@@ -509,10 +509,13 @@ mod win {
             };
             nid.dwInfoFlags = NIIF_INFO;
             copy_wide(&mut nid.szTip, "Z-SHOT");
-            copy_wide(&mut nid.szInfoTitle, "Z-SHOT läuft im Hintergrund");
+            copy_wide(&mut nid.szInfoTitle, crate::i18n::tr("Z-SHOT läuft im Hintergrund", "Z-SHOT is running in the background"));
             copy_wide(
                 &mut nid.szInfo,
-                "Tastenkürzel drücken oder auf das Symbol klicken, um einen Bereich aufzunehmen. Rechtsklick: Einstellungen.",
+                crate::i18n::tr(
+                    "Tastenkürzel drücken oder auf das Symbol klicken, um einen Bereich aufzunehmen. Rechtsklick: Einstellungen.",
+                    "Press the hotkey or click the icon to capture a region. Right-click: settings.",
+                ),
             );
             Shell_NotifyIconW(NIM_ADD, &nid);
 

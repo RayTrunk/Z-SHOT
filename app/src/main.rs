@@ -6,6 +6,7 @@
 
 mod background;
 mod capture;
+mod i18n;
 mod icons;
 mod log;
 mod model;
@@ -19,6 +20,7 @@ use eframe::egui::{
     FontFamily, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle,
     TextureOptions, Vec2, ViewportBuilder, ViewportCommand,
 };
+use i18n::tr;
 use icons::{icon_button, icon_text_button, paint_icon, Icon};
 use image::RgbaImage;
 use model::{
@@ -220,8 +222,8 @@ fn run_self_test(out_path: PathBuf) -> Result<(), String> {
 fn create_demo_items() -> Vec<ShotItem> {
     let mut first = ShotItem::new(
         "demo-dashboard".into(),
-        "Dashboard-Übersicht".into(),
-        "Beispiel-Screenshot mit Markierungen (Pfeil, Textmarker, Schwärzung)".into(),
+        tr("Dashboard-Übersicht", "Dashboard overview").into(),
+        tr("Beispiel-Screenshot mit Markierungen (Pfeil, Textmarker, Schwärzung)", "Sample screenshot with markups (arrow, highlighter, redaction)").into(),
         capture::generate_sample_capture(0),
     );
     first.meta.favorite = true;
@@ -242,15 +244,15 @@ fn create_demo_items() -> Vec<ShotItem> {
     });
     first.meta.annotations.push(Annotation::Text {
         pos: [435.0, 214.0],
-        text: "Höchstwert".into(),
+        text: tr("Höchstwert", "Peak").into(),
         color: color32_to_arr(PALETTE[0]),
         size: 18.0,
     });
 
     let second = ShotItem::new(
         "demo-editor".into(),
-        "Code-Notizen".into(),
-        "Beispiel-Ansicht im dunklen Design".into(),
+        tr("Code-Notizen", "Code notes").into(),
+        tr("Beispiel-Ansicht im dunklen Design", "Sample view in dark theme").into(),
         capture::generate_sample_capture(1),
     );
 
@@ -498,7 +500,7 @@ impl ZShotApp {
             pending_text: None,
             crop_rect: None,
             delay_capture_at: None,
-            status_msg: format!("Bereit ({} für Bereich)", settings.region_hotkeys_label()),
+            status_msg: tr(format!("Bereit ({} für Bereich)", settings.region_hotkeys_label()), format!("Ready ({} for region)", settings.region_hotkeys_label())),
             status_until: None,
             persist,
             album_path,
@@ -566,9 +568,9 @@ impl ZShotApp {
         self.pan = Vec2::ZERO;
         self.persist_album();
         self.set_status(if removed == 1 {
-            "Screenshot gelöscht".to_string()
+            tr("Screenshot gelöscht", "Screenshot deleted").to_string()
         } else {
-            format!("{removed} Screenshots gelöscht")
+            tr(format!("{removed} Screenshots gelöscht"), format!("{removed} screenshots deleted"))
         });
     }
 
@@ -579,7 +581,7 @@ impl ZShotApp {
         };
         let count = ids.len();
         let question = if count == self.items.len() && count > 1 {
-            format!("Alle {count} Screenshots löschen?")
+            tr(format!("Alle {count} Screenshots löschen?"), format!("Delete all {count} screenshots?"))
         } else if count == 1 {
             let title = self
                 .items
@@ -587,9 +589,9 @@ impl ZShotApp {
                 .find(|it| it.meta.id == ids[0])
                 .map(|it| it.meta.title.as_str())
                 .unwrap_or("");
-            format!("Screenshot „{title}“ löschen?")
+            tr(format!("Screenshot „{title}“ löschen?"), format!("Delete screenshot “{title}”?"))
         } else {
-            format!("{count} ausgewählte Screenshots löschen?")
+            tr(format!("{count} ausgewählte Screenshots löschen?"), format!("Delete {count} selected screenshots?"))
         };
         let mut confirmed = false;
         let mut cancelled = false;
@@ -597,17 +599,17 @@ impl ZShotApp {
             ui.set_width(320.0);
             ui.label(RichText::new(question).strong().size(14.0));
             ui.add_space(4.0);
-            ui.label(RichText::new("Die Bilder werden endgültig entfernt.").weak());
+            ui.label(RichText::new(tr("Die Bilder werden endgültig entfernt.", "The images will be deleted permanently.")).weak());
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let delete = egui::Button::new(
-                    RichText::new("Löschen").color(Color32::WHITE),
+                    RichText::new(tr("Löschen", "Delete")).color(Color32::WHITE),
                 )
                 .fill(Color32::from_rgb(220, 38, 38));
                 if ui.add(delete).clicked() {
                     confirmed = true;
                 }
-                if ui.button("Abbrechen").clicked() {
+                if ui.button(tr("Abbrechen", "Cancel")).clicked() {
                     cancelled = true;
                 }
             });
@@ -624,7 +626,7 @@ impl ZShotApp {
     fn save_settings(&mut self) {
         if self.persist {
             if let Err(e) = self.settings.save(&self.settings_path) {
-                self.set_status(format!("Einstellungen nicht gespeichert: {e}"));
+                self.set_status(tr(format!("Einstellungen nicht gespeichert: {e}"), format!("Settings not saved: {e}")));
             }
         }
     }
@@ -787,7 +789,7 @@ impl ZShotApp {
             full_img
         };
 
-        self.deliver_capture(ctx, cropped, "Bereich");
+        self.deliver_capture(ctx, cropped, tr("Bereich", "Region"));
     }
 
     fn take_full_capture(&mut self, ctx: &egui::Context) {
@@ -801,11 +803,11 @@ impl ZShotApp {
         let img = match capture::capture_primary_screen() {
             Ok(img) => img,
             Err(err) => {
-                self.set_status(format!("Aufnahme-Hinweis: {}", err));
+                self.set_status(tr(format!("Aufnahme-Hinweis: {}", err), format!("Capture notice: {}", err)));
                 capture::generate_sample_capture(self.items.len())
             }
         };
-        self.deliver_capture(ctx, img, "Vollbild");
+        self.deliver_capture(ctx, img, tr("Vollbild", "Fullscreen"));
     }
 
     /// Adds a fresh capture to the album and applies the "after capture" setting:
@@ -821,32 +823,32 @@ impl ZShotApp {
         }
 
         let after = self.settings.after_capture;
-        let mut status = format!("{kind} aufgenommen — bereit zum Bearbeiten");
+        let mut status = tr(format!("{kind} aufgenommen — bereit zum Bearbeiten"), format!("{kind} captured — ready to edit"));
         if after.saves() {
             let dir = self.settings.effective_save_dir();
             let notify_success = !after.opens_editor() && !self.capture_from_editor;
             match settings::reserve_capture_path(&dir, now) {
                 Ok(path) => {
-                    status = format!("Gespeichert: {}", path.display());
+                    status = tr(format!("Gespeichert: {}", path.display()), format!("Saved: {}", path.display()));
                     let shown = path.display().to_string();
                     let reserved = path.clone();
                     write_png_in_background(path, item.image.clone(), move |result| {
                         let (title, text) = match result {
-                            Ok(()) if notify_success => ("Screenshot gespeichert", shown),
+                            Ok(()) if notify_success => (tr("Screenshot gespeichert", "Screenshot saved"), shown),
                             Ok(()) => return,
                             Err(e) => {
                                 let _ = std::fs::remove_file(&reserved);
-                                ("Speichern fehlgeschlagen", format!("{shown} — {e}"))
+                                (tr("Speichern fehlgeschlagen", "Saving failed"), format!("{shown} — {e}"))
                             }
                         };
                         background::send_command(BgCommand::Notify { title: title.into(), text });
                     });
                 }
                 Err(e) => {
-                    status = format!("Speichern fehlgeschlagen: {e}");
+                    status = tr(format!("Speichern fehlgeschlagen: {e}"), format!("Saving failed: {e}"));
                     if notify_success {
                         background::send_command(BgCommand::Notify {
-                            title: "Speichern fehlgeschlagen".into(),
+                            title: tr("Speichern fehlgeschlagen", "Saving failed").into(),
                             text: format!("{} — {e}", dir.display()),
                         });
                     }
@@ -855,7 +857,7 @@ impl ZShotApp {
         }
         if self.settings.copy_to_clipboard {
             if let Err(e) = copy_image_to_clipboard(&item.image) {
-                status = format!("{status} · Zwischenablage-Fehler: {e}");
+                status = tr(format!("{status} · Zwischenablage-Fehler: {e}"), format!("{status} · Clipboard error: {e}"));
             }
         }
 
@@ -879,12 +881,12 @@ impl ZShotApp {
             return;
         };
         if !item.is_loaded() {
-            self.set_status("Bild wird noch geladen …");
+            self.set_status(tr("Bild wird noch geladen …", "Image is still loading …"));
             return;
         }
         match copy_image_to_clipboard(&item.render_flattened()) {
-            Ok(()) => self.set_status("In Zwischenablage kopiert"),
-            Err(e) => self.set_status(format!("Zwischenablage-Fehler: {}", e)),
+            Ok(()) => self.set_status(tr("In Zwischenablage kopiert", "Copied to clipboard")),
+            Err(e) => self.set_status(tr(format!("Zwischenablage-Fehler: {}", e), format!("Clipboard error: {}", e))),
         }
     }
 
@@ -893,7 +895,7 @@ impl ZShotApp {
             return;
         };
         if !item.is_loaded() {
-            self.set_status("Bild wird noch geladen …");
+            self.set_status(tr("Bild wird noch geladen …", "Image is still loading …"));
             return;
         }
         let default_name = format!(
@@ -907,16 +909,16 @@ impl ZShotApp {
         if let Some(path) = rfd::FileDialog::new()
             .set_directory(&export_dir)
             .set_file_name(&default_name)
-            .add_filter("PNG-Bild", &["png"])
+            .add_filter(tr("PNG-Bild", "PNG image"), &["png"])
             .save_file()
         {
             let flat = item.render_flattened();
             match flat.save(&path) {
-                Ok(()) => self.set_status(format!(
-                    "Gespeichert: {}",
-                    path.file_name().and_then(|n| n.to_str()).unwrap_or("PNG")
-                )),
-                Err(e) => self.set_status(format!("Speichern fehlgeschlagen: {}", e)),
+                Ok(()) => {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("PNG");
+                    self.set_status(tr(format!("Gespeichert: {}", name), format!("Saved: {}", name)))
+                }
+                Err(e) => self.set_status(tr(format!("Speichern fehlgeschlagen: {}", e), format!("Saving failed: {}", e))),
             }
         }
     }
@@ -1091,7 +1093,7 @@ impl ZShotApp {
                     }
                 } else {
                     // Instruction pill at top center
-                    let hint = "Bereich mit der Maus markieren · Esc zum Abbrechen";
+                    let hint = tr("Bereich mit der Maus markieren · Esc zum Abbrechen", "Drag to select a region · Esc to cancel");
                     let font = FontId::proportional(14.0);
                     let galley = painter.layout_no_wrap(hint.to_string(), font.clone(), Color32::WHITE);
                     let pill = Rect::from_center_size(
@@ -1161,7 +1163,7 @@ impl ZShotApp {
                 if item.undo() {
                     self.selected_annotation = None;
                     self.persist_album();
-                    self.set_status("Rückgängig");
+                    self.set_status(tr("Rückgängig", "Undone"));
                 }
             }
         }
@@ -1169,7 +1171,7 @@ impl ZShotApp {
             if let Some(item) = self.items.get_mut(self.selected) {
                 if item.redo() {
                     self.persist_album();
-                    self.set_status("Wiederhergestellt");
+                    self.set_status(tr("Wiederhergestellt", "Redone"));
                 }
             }
         }
@@ -1184,7 +1186,7 @@ impl ZShotApp {
                 if let Some(item) = self.items.get_mut(self.selected) {
                     item.delete_annotation(idx);
                     self.persist_album();
-                    self.set_status("Markierung gelöscht");
+                    self.set_status(tr("Markierung gelöscht", "Markup deleted"));
                 }
             } else if self.confirm_delete.is_none() && !self.items.is_empty() {
                 // No marking picked: Del deletes the selected screenshot(s), after asking.
@@ -1209,47 +1211,47 @@ impl ZShotApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if icon_button(ui, Icon::Sidebar, self.show_sidebar, "Album ein-/ausblenden")
+                    if icon_button(ui, Icon::Sidebar, self.show_sidebar, tr("Album ein-/ausblenden", "Show/hide album"))
                         .clicked()
                     {
                         self.show_sidebar = !self.show_sidebar;
                     }
 
                     // Primary capture action: Region overlay capture
-                    if icon_text_button(ui, Icon::Region, "Bereich", true)
-                        .on_hover_text(format!("Bereich auf dem Bildschirm markieren ({})", self.settings.region_hotkeys_label()))
+                    if icon_text_button(ui, Icon::Region, tr("Bereich", "Region"), true)
+                        .on_hover_text(tr(format!("Bereich auf dem Bildschirm markieren ({})", self.settings.region_hotkeys_label()), format!("Select a region on the screen ({})", self.settings.region_hotkeys_label())))
                         .clicked()
                     {
                         self.begin_region_capture(ctx);
                     }
-                    if icon_button(ui, Icon::Desktop, false, "Vollbild aufnehmen").clicked() {
+                    if icon_button(ui, Icon::Desktop, false, tr("Vollbild aufnehmen", "Capture fullscreen")).clicked() {
                         self.take_full_capture(ctx);
                     }
                     let delay_tip = if let Some(target) = self.delay_capture_at {
                         let rem = target.saturating_duration_since(Instant::now()).as_secs_f32();
-                        format!("Verzögerte Aufnahme in {:.0}s...", rem.ceil())
+                        tr(format!("Verzögerte Aufnahme in {:.0}s...", rem.ceil()), format!("Delayed capture in {:.0}s...", rem.ceil()))
                     } else {
-                        "Verzögerte Bereichsaufnahme (3s)".to_string()
+                        tr("Verzögerte Bereichsaufnahme (3s)", "Delayed region capture (3s)").to_string()
                     };
                     if icon_button(ui, Icon::Clock, self.delay_capture_at.is_some(), &delay_tip)
                         .clicked()
                     {
                         self.delay_capture_at = Some(Instant::now() + Duration::from_secs(3));
-                        self.set_status("Bereichsaufnahme startet in 3 Sekunden...");
+                        self.set_status(tr("Bereichsaufnahme startet in 3 Sekunden...", "Region capture starts in 3 seconds..."));
                     }
 
                     ui.separator();
 
                     // Markup tools
                     let tools = [
-                        (Tool::Select, Icon::Cursor, "Auswahl / Verschieben"),
-                        (Tool::Arrow, Icon::ArrowUpRight, "Pfeil"),
-                        (Tool::Rect, Icon::Square, "Rechteck"),
-                        (Tool::Highlight, Icon::Highlighter, "Textmarker"),
-                        (Tool::Redact, Icon::EyeSlash, "Schwärzen (Zensur)"),
-                        (Tool::Text, Icon::Text, "Text hinzufügen"),
-                        (Tool::Freehand, Icon::Pencil, "Freihand"),
-                        (Tool::Crop, Icon::Crop, "Zuschneiden"),
+                        (Tool::Select, Icon::Cursor, tr("Auswahl / Verschieben", "Select / Move")),
+                        (Tool::Arrow, Icon::ArrowUpRight, tr("Pfeil", "Arrow")),
+                        (Tool::Rect, Icon::Square, tr("Rechteck", "Rectangle")),
+                        (Tool::Highlight, Icon::Highlighter, tr("Textmarker", "Highlighter")),
+                        (Tool::Redact, Icon::EyeSlash, tr("Schwärzen (Zensur)", "Redact (censor)")),
+                        (Tool::Text, Icon::Text, tr("Text hinzufügen", "Add text")),
+                        (Tool::Freehand, Icon::Pencil, tr("Freihand", "Freehand")),
+                        (Tool::Crop, Icon::Crop, tr("Zuschneiden", "Crop")),
                     ];
                     for (t, ic, tip) in tools {
                         if icon_button(ui, ic, self.tool == t, tip).clicked() {
@@ -1261,14 +1263,14 @@ impl ZShotApp {
 
                     ui.separator();
 
-                    if icon_button(ui, Icon::Undo, false, "Rückgängig (Strg+Z)").clicked() {
+                    if icon_button(ui, Icon::Undo, false, tr("Rückgängig (Strg+Z)", "Undo (Ctrl+Z)")).clicked() {
                         if let Some(item) = self.items.get_mut(self.selected) {
                             if item.undo() {
                                 self.persist_album();
                             }
                         }
                     }
-                    if icon_button(ui, Icon::Redo, false, "Wiederholen (Strg+Y)").clicked() {
+                    if icon_button(ui, Icon::Redo, false, tr("Wiederholen (Strg+Y)", "Redo (Ctrl+Y)")).clicked() {
                         if let Some(item) = self.items.get_mut(self.selected) {
                             if item.redo() {
                                 self.persist_album();
@@ -1303,21 +1305,21 @@ impl ZShotApp {
                         let btn = egui::Button::new(RichText::new(*lbl).size(11.5))
                             .selected(sel)
                             .min_size(Vec2::new(22.0, 24.0));
-                        if ui.add(btn).on_hover_text("Strichstärke").clicked() {
+                        if ui.add(btn).on_hover_text(tr("Strichstärke", "Stroke width")).clicked() {
                             self.stroke_idx = idx;
                         }
                     }
 
                     // Right-aligned actions: Export, Copy, Background, Theme, Quit
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if icon_button(ui, Icon::Power, false, "Z-SHOT vollständig beenden")
+                        if icon_button(ui, Icon::Power, false, tr("Z-SHOT vollständig beenden", "Quit Z-SHOT completely"))
                             .clicked()
                         {
                             self.allow_exit = true;
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
 
-                        if icon_button(ui, Icon::Cog, self.show_settings, "Einstellungen")
+                        if icon_button(ui, Icon::Cog, self.show_settings, tr("Einstellungen", "Settings"))
                             .clicked()
                         {
                             self.show_settings = !self.show_settings;
@@ -1325,31 +1327,31 @@ impl ZShotApp {
 
                         let theme_icon = if self.dark_mode { Icon::Sun } else { Icon::Moon };
                         let theme_tip = if self.dark_mode {
-                            "Helles Design"
+                            tr("Helles Design", "Light theme")
                         } else {
-                            "Dunkles Design"
+                            tr("Dunkles Design", "Dark theme")
                         };
                         if icon_button(ui, theme_icon, false, theme_tip).clicked() {
                             self.dark_mode = !self.dark_mode;
                             apply_theme(ctx, self.dark_mode);
                         }
 
-                        if icon_text_button(ui, Icon::Background, "Hintergrund", false)
-                            .on_hover_text(format!("Fenster ausblenden — weiter im Hintergrund ({})", self.settings.region_hotkeys_label()))
+                        if icon_text_button(ui, Icon::Background, tr("Hintergrund", "Background"), false)
+                            .on_hover_text(tr(format!("Fenster ausblenden — weiter im Hintergrund ({})", self.settings.region_hotkeys_label()), format!("Hide window — keep running in the background ({})", self.settings.region_hotkeys_label())))
                             .clicked()
                         {
                             self.hide_to_background(ctx);
                         }
 
                         if icon_text_button(ui, Icon::Download, "Export", false)
-                            .on_hover_text("Als PNG speichern (Strg+S)")
+                            .on_hover_text(tr("Als PNG speichern (Strg+S)", "Save as PNG (Ctrl+S)"))
                             .clicked()
                         {
                             self.export_selected_png();
                         }
 
-                        if icon_text_button(ui, Icon::Clipboard, "Kopieren", false)
-                            .on_hover_text("In Zwischenablage kopieren (Strg+C)")
+                        if icon_text_button(ui, Icon::Clipboard, tr("Kopieren", "Copy"), false)
+                            .on_hover_text(tr("In Zwischenablage kopieren (Strg+C)", "Copy to clipboard (Ctrl+C)"))
                             .clicked()
                         {
                             self.copy_selected_to_clipboard();
@@ -1377,7 +1379,7 @@ impl ZShotApp {
                     ui.label(RichText::new("Album").strong().size(15.0));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            RichText::new(format!("{} Einträge", self.items.len()))
+                            RichText::new(tr(format!("{} Einträge", self.items.len()), format!("{} entries", self.items.len())))
                                 .weak()
                                 .size(11.5),
                         );
@@ -1395,18 +1397,18 @@ impl ZShotApp {
                     );
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Suchen (Titel, Notiz, Text)...")
+                            .hint_text(tr("Suchen (Titel, Notiz, Text)...", "Search (title, notes, text)..."))
                             .desired_width(f32::INFINITY),
                     );
                 });
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(!self.only_favorites, "Alle").clicked() {
+                    if ui.selectable_label(!self.only_favorites, tr("Alle", "All")).clicked() {
                         self.only_favorites = false;
                     }
                     if ui
-                        .selectable_label(self.only_favorites, "Favoriten")
+                        .selectable_label(self.only_favorites, tr("Favoriten", "Favorites"))
                         .clicked()
                     {
                         self.only_favorites = true;
@@ -1417,19 +1419,19 @@ impl ZShotApp {
                     let picked = self.selection_ids().len();
                     let has_items = !self.items.is_empty();
                     let label = if self.marked.is_empty() {
-                        "Auswahl löschen".to_string()
+                        tr("Auswahl löschen", "Delete selection").to_string()
                     } else {
-                        format!("Auswahl löschen ({picked})")
+                        tr(format!("Auswahl löschen ({picked})"), format!("Delete selection ({picked})"))
                     };
                     if ui
                         .add_enabled(has_items, egui::Button::new(label).small())
-                        .on_hover_text("Löscht das gewählte Bild. Mit Strg+Klick mehrere Bilder auswählen.")
+                        .on_hover_text(tr("Löscht das gewählte Bild. Mit Strg+Klick mehrere Bilder auswählen.", "Deletes the selected image. Ctrl+click to select multiple images."))
                         .clicked()
                     {
                         self.confirm_delete = Some(self.selection_ids());
                     }
                     if ui
-                        .add_enabled(has_items, egui::Button::new("Alle löschen").small())
+                        .add_enabled(has_items, egui::Button::new(tr("Alle löschen", "Delete all")).small())
                         .clicked()
                     {
                         self.confirm_delete =
@@ -1464,7 +1466,7 @@ impl ZShotApp {
                         if matching.is_empty() {
                             ui.add_space(24.0);
                             ui.vertical_centered(|ui| {
-                                ui.label(RichText::new("Keine Treffer").weak());
+                                ui.label(RichText::new(tr("Keine Treffer", "No matches")).weak());
                             });
                         }
 
@@ -1523,7 +1525,7 @@ impl ZShotApp {
                                             ui.label(
                                                 RichText::new(format!(
                                                     "{} · {}×{}",
-                                                    self.items[idx].meta.created_at,
+                                                    self.items[idx].meta.created_label(),
                                                     self.items[idx].meta.width,
                                                     self.items[idx].meta.height
                                                 ))
@@ -1578,9 +1580,9 @@ impl ZShotApp {
                             let over_del = pointer.is_some_and(|p| del_rect.contains(p));
                             let over_fav = pointer.is_some_and(|p| fav_rect.contains(p));
                             let card = if over_del {
-                                card.on_hover_text("Löschen")
+                                card.on_hover_text(tr("Löschen", "Delete"))
                             } else if over_fav {
-                                card.on_hover_text("Favorit")
+                                card.on_hover_text(tr("Favorit", "Favorite"))
                             } else {
                                 card
                             };
@@ -1636,7 +1638,7 @@ impl ZShotApp {
                 ui.separator();
                 ui.add_space(4.0);
                 if let Some(item) = self.items.get_mut(self.selected) {
-                    ui.label(RichText::new("Titel & Notizen").weak().size(11.5));
+                    ui.label(RichText::new(tr("Titel & Notizen", "Title & notes")).weak().size(11.5));
                     let title_changed = ui
                         .add(
                             egui::TextEdit::singleline(&mut item.meta.title)
@@ -1648,7 +1650,7 @@ impl ZShotApp {
                             egui::TextEdit::multiline(&mut item.meta.notes)
                                 .desired_rows(2)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("Schlagwörter / Notizen für Suche..."),
+                                .hint_text(tr("Schlagwörter / Notizen für Suche...", "Keywords / notes for search...")),
                         )
                         .changed();
                     if title_changed || notes_changed {
@@ -1664,7 +1666,7 @@ impl ZShotApp {
             .show(ctx, |ui| {
                 if self.items.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label(format!("Noch keine Screenshots. Drücke {} oder klicke auf „Bereich“.", self.settings.region_hotkeys_label()));
+                        ui.label(tr(format!("Noch keine Screenshots. Drücke {} oder klicke auf „Bereich“.", self.settings.region_hotkeys_label()), format!("No screenshots yet. Press {} or click “Region”.", self.settings.region_hotkeys_label())));
                     });
                     return;
                 }
@@ -1931,12 +1933,11 @@ impl ZShotApp {
                                 .inner_margin(egui::Margin::symmetric(10, 6))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(format!(
-                                            "Zuschnitt: {:.0} × {:.0} px",
-                                            cr.width(),
-                                            cr.height()
+                                        ui.label(tr(
+                                            format!("Zuschnitt: {:.0} × {:.0} px", cr.width(), cr.height()),
+                                            format!("Crop: {:.0} × {:.0} px", cr.width(), cr.height()),
                                         ));
-                                        if icon_text_button(ui, Icon::Check, "Anwenden", true)
+                                        if icon_text_button(ui, Icon::Check, tr("Anwenden", "Apply"), true)
                                             .clicked()
                                         {
                                             let ok = self.items[self.selected].apply_crop(
@@ -1956,12 +1957,12 @@ impl ZShotApp {
                                                     self.persist_album();
                                                 }
                                                 self.fit_requested = true;
-                                                self.set_status("Bild zugeschnitten");
+                                                self.set_status(tr("Bild zugeschnitten", "Image cropped"));
                                             }
                                             self.crop_rect = None;
                                             self.tool = Tool::Select;
                                         }
-                                        if icon_text_button(ui, Icon::XMark, "Abbrechen", false)
+                                        if icon_text_button(ui, Icon::XMark, tr("Abbrechen", "Cancel"), false)
                                             .clicked()
                                         {
                                             self.crop_rect = None;
@@ -1985,17 +1986,17 @@ impl ZShotApp {
                                     ui.horizontal(|ui| {
                                         let te = ui.add(
                                             egui::TextEdit::singleline(&mut pt.text)
-                                                .hint_text("Text eingeben...")
+                                                .hint_text(tr("Text eingeben...", "Enter text..."))
                                                 .desired_width(180.0),
                                         );
                                         te.request_focus();
                                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                        if icon_button(ui, Icon::Check, true, "Einfügen").clicked()
+                                        if icon_button(ui, Icon::Check, true, tr("Einfügen", "Insert")).clicked()
                                             || enter
                                         {
                                             commit_text = Some((pt.img_pos, pt.text.clone()));
                                         }
-                                        if icon_button(ui, Icon::XMark, false, "Abbrechen")
+                                        if icon_button(ui, Icon::XMark, false, tr("Abbrechen", "Cancel"))
                                             .clicked()
                                         {
                                             cancel_text = true;
@@ -2038,7 +2039,8 @@ impl ZShotApp {
             .min(screen.width() - 40.0)
             .min(screen.height() - 80.0)
             .max(300.0);
-        egui::Window::new("Einstellungen")
+        egui::Window::new(tr("Einstellungen", "Settings"))
+            .id(egui::Id::new("settings_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -2053,12 +2055,14 @@ impl ZShotApp {
                     .show(ui, |ui| {
 
                 // --- Hotkeys -------------------------------------------------
-                ui.label(RichText::new("Tastenkürzel").strong().size(15.0));
+                ui.label(RichText::new(tr("Tastenkürzel", "Hotkeys")).strong().size(15.0));
                 ui.label(
-                    RichText::new(
+                    RichText::new(tr(
                         "Auf das Feld klicken und die gewünschte Taste oder Kombination drücken \
                          (wird automatisch erkannt). Esc bricht ab.",
-                    )
+                        "Click the field and press the key or combination you want \
+                         (detected automatically). Esc cancels.",
+                    ))
                     .weak()
                     .size(12.0),
                 );
@@ -2071,11 +2075,11 @@ impl ZShotApp {
 
                             let is_recording = self.recording == Some(action);
                             let text = if is_recording {
-                                RichText::new("Taste drücken …").color(Color32::from_rgb(245, 158, 11))
+                                RichText::new(tr("Taste drücken …", "Press a key …")).color(Color32::from_rgb(245, 158, 11))
                             } else {
                                 match self.settings.hotkey(action) {
                                     Some(hk) => RichText::new(hk.label()).strong(),
-                                    None => RichText::new("Nicht belegt").weak(),
+                                    None => RichText::new(tr("Nicht belegt", "Not set")).weak(),
                                 }
                             };
                             let border = if is_recording {
@@ -2088,9 +2092,9 @@ impl ZShotApp {
                                 .stroke(Stroke::new(1.0_f32, border))
                                 .min_size(Vec2::new(170.0, 26.0));
                             let resp = ui.add(btn).on_hover_text(if is_recording {
-                                "Klicken zum Abbrechen"
+                                tr("Klicken zum Abbrechen", "Click to cancel")
                             } else {
-                                "Klicken und neue Taste drücken"
+                                tr("Klicken und neue Taste drücken", "Click and press a new key")
                             });
                             if resp.clicked() {
                                 if is_recording {
@@ -2106,7 +2110,7 @@ impl ZShotApp {
 
                             let clear_enabled = self.settings.hotkey(action).is_some() && !is_recording;
                             if ui
-                                .add_enabled(clear_enabled, egui::Button::new("Entfernen"))
+                                .add_enabled(clear_enabled, egui::Button::new(tr("Entfernen", "Remove")))
                                 .clicked()
                             {
                                 self.settings.set_hotkey(action, None);
@@ -2121,14 +2125,16 @@ impl ZShotApp {
                                 .map(|(_, ok)| *ok);
                             match (self.settings.hotkey(action), status) {
                                 (Some(_), Some(true)) => {
-                                    ui.label(RichText::new("aktiv").color(Color32::from_rgb(16, 185, 129)));
+                                    ui.label(RichText::new(tr("aktiv", "active")).color(Color32::from_rgb(16, 185, 129)));
                                 }
                                 (Some(_), Some(false)) => {
-                                    ui.label(RichText::new("belegt").color(Color32::from_rgb(239, 68, 68)))
-                                        .on_hover_text(
+                                    ui.label(RichText::new(tr("belegt", "in use")).color(Color32::from_rgb(239, 68, 68)))
+                                        .on_hover_text(tr(
                                             "Windows hat die Kombination abgelehnt — sie wird \
                                              vermutlich von einem anderen Programm verwendet.",
-                                        );
+                                            "Windows rejected the combination — it is \
+                                             probably used by another program.",
+                                        ));
                                 }
                                 _ => {
                                     ui.label("");
@@ -2144,15 +2150,18 @@ impl ZShotApp {
                 if print_used {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            RichText::new(
+                            RichText::new(tr(
                                 "Öffnet die Druck-Taste stattdessen das Windows-Snipping-Tool? \
                                  Dann in Windows unter Barrierefreiheit › Tastatur die Option \
                                  „Druck-Taste zum Öffnen der Bildschirmaufnahme verwenden“ ausschalten.",
-                            )
+                                "Does the Print key open the Windows Snipping Tool instead? \
+                                 Then turn off “Use the Print screen key to open screen capture” \
+                                 in Windows under Accessibility › Keyboard.",
+                            ))
                             .weak()
                             .size(12.0),
                         );
-                        if ui.small_button("Windows-Einstellung öffnen").clicked() {
+                        if ui.small_button(tr("Windows-Einstellung öffnen", "Open Windows setting")).clicked() {
                             let _ = std::process::Command::new("explorer")
                                 .arg("ms-settings:easeofaccess-keyboard")
                                 .spawn();
@@ -2163,55 +2172,55 @@ impl ZShotApp {
                 ui.separator();
 
                 // --- After capture -------------------------------------------
-                ui.label(RichText::new("Nach der Bereichsauswahl").strong().size(15.0));
+                ui.label(RichText::new(tr("Nach der Bereichsauswahl", "After selecting a region")).strong().size(15.0));
                 let before = self.settings.clone();
                 ui.radio_value(
                     &mut self.settings.after_capture,
                     AfterCapture::OpenEditor,
-                    "Editor-Fenster öffnen",
+                    tr("Editor-Fenster öffnen", "Open editor window"),
                 );
                 ui.radio_value(
                     &mut self.settings.after_capture,
                     AfterCapture::SaveDirect,
-                    "Direkt speichern (ohne Fenster)",
+                    tr("Direkt speichern (ohne Fenster)", "Save directly (no window)"),
                 );
                 ui.radio_value(
                     &mut self.settings.after_capture,
                     AfterCapture::SaveAndOpenEditor,
-                    "Speichern und Editor-Fenster öffnen",
+                    tr("Speichern und Editor-Fenster öffnen", "Save and open editor window"),
                 );
                 ui.checkbox(
                     &mut self.settings.copy_to_clipboard,
-                    "Zusätzlich in die Zwischenablage kopieren",
+                    tr("Zusätzlich in die Zwischenablage kopieren", "Also copy to clipboard"),
                 );
 
                 ui.separator();
 
                 // --- Save folder ---------------------------------------------
-                ui.label(RichText::new("Speicherort").strong().size(15.0));
+                ui.label(RichText::new(tr("Speicherort", "Save location")).strong().size(15.0));
                 let dir = self.settings.effective_save_dir();
                 ui.label(RichText::new(dir.display().to_string()).monospace().size(12.0));
                 ui.label(
-                    RichText::new(format!(
-                        "Dateiname nach Datum und Uhrzeit, z. B. {}",
-                        settings::capture_file_name(chrono::Local::now())
+                    RichText::new(tr(
+                        format!("Dateiname nach Datum und Uhrzeit, z. B. {}", settings::capture_file_name(chrono::Local::now())),
+                        format!("File name by date and time, e.g. {}", settings::capture_file_name(chrono::Local::now())),
                     ))
                     .weak()
                     .size(12.0),
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Ändern …").clicked() {
+                    if ui.button(tr("Ändern …", "Change …")).clicked() {
                         let _ = std::fs::create_dir_all(&dir);
                         if let Some(picked) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
                             self.settings.save_dir = Some(picked);
                         }
                     }
-                    if ui.button("Ordner öffnen").clicked() {
+                    if ui.button(tr("Ordner öffnen", "Open folder")).clicked() {
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = std::process::Command::new("explorer").arg(&dir).spawn();
                     }
                     if self.settings.save_dir.is_some()
-                        && ui.button("Standard (Bilder\\Z-SHOT)").clicked()
+                        && ui.button(tr("Standard (Bilder\\Z-SHOT)", "Default (Pictures\\Z-SHOT)")).clicked()
                     {
                         self.settings.save_dir = None;
                     }
@@ -2224,9 +2233,9 @@ impl ZShotApp {
                 ui.separator();
 
                 // --- General -------------------------------------------------
-                ui.label(RichText::new("Allgemein").strong().size(15.0));
+                ui.label(RichText::new(tr("Allgemein", "General")).strong().size(15.0));
                 let mut autostart = self.autostart;
-                if ui.checkbox(&mut autostart, "Beim Windows-Start im Hintergrund starten").changed() {
+                if ui.checkbox(&mut autostart, tr("Beim Windows-Start im Hintergrund starten", "Start in the background when Windows starts")).changed() {
                     if let Err(e) = settings::set_autostart(autostart) {
                         self.set_status(format!("Autostart: {e}"));
                     }
@@ -2236,25 +2245,27 @@ impl ZShotApp {
                 ui.separator();
 
                 // --- About ---------------------------------------------------
-                ui.label(RichText::new("Über Z-SHOT").strong().size(15.0));
+                ui.label(RichText::new(tr("Über Z-SHOT", "About Z-SHOT")).strong().size(15.0));
                 ui.label(format!(
                     "Z-SHOT Version {}  ·  © 2026 R. Trunk",
                     env!("CARGO_PKG_VERSION")
                 ));
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("Lizenz: ");
+                    ui.label(tr("Lizenz: ", "Licence: "));
                     ui.hyperlink_to(
-                        "GNU General Public License v3 oder neuer",
+                        tr("GNU General Public License v3 oder neuer", "GNU General Public License v3 or later"),
                         "https://www.gnu.org/licenses/gpl-3.0.html",
                     );
                 });
                 ui.label(
-                    RichText::new(
+                    RichText::new(tr(
                         "Freie Software: Sie dürfen sie unter den Bedingungen der GPL \
                          weitergeben und verändern. Sie wird ohne jede Gewährleistung \
                          bereitgestellt.",
-                    )
+                        "Free software: you may redistribute and modify it under the terms \
+                         of the GPL. It comes with ABSOLUTELY NO WARRANTY.",
+                    ))
                     .weak()
                     .size(12.0),
                 );
@@ -2262,7 +2273,7 @@ impl ZShotApp {
 
                 ui.separator();
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Schließen").clicked() {
+                    if ui.button(tr("Schließen", "Close")).clicked() {
                         close_clicked = true;
                     }
                 });
@@ -2295,9 +2306,9 @@ impl ZShotApp {
                         );
                         ui.separator();
                         ui.label(
-                            RichText::new(format!(
-                                "{} Markierungen",
-                                item.meta.annotations.len()
+                            RichText::new(tr(
+                                format!("{} Markierungen", item.meta.annotations.len()),
+                                format!("{} markups", item.meta.annotations.len()),
                             ))
                             .weak()
                             .size(12.0),
@@ -2305,7 +2316,7 @@ impl ZShotApp {
                     }
 
                     let idle_hint =
-                        format!("{}: Bereich aufnehmen", self.settings.region_hotkeys_label());
+                        tr(format!("{}: Bereich aufnehmen", self.settings.region_hotkeys_label()), format!("{}: capture region", self.settings.region_hotkeys_label()));
                     let active_status = match self.status_until {
                         Some(until) if Instant::now() < until => self.status_msg.as_str(),
                         _ => idle_hint.as_str(),
@@ -2314,15 +2325,15 @@ impl ZShotApp {
                     ui.label(RichText::new(active_status).weak().size(12.0));
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if icon_button(ui, Icon::FitScreen, false, "An Fenster anpassen").clicked()
+                        if icon_button(ui, Icon::FitScreen, false, tr("An Fenster anpassen", "Fit to window")).clicked()
                         {
                             self.fit_requested = true;
                         }
-                        if icon_button(ui, Icon::ZoomIn, false, "Vergrößern").clicked() {
+                        if icon_button(ui, Icon::ZoomIn, false, tr("Vergrößern", "Zoom in")).clicked() {
                             self.zoom = (self.zoom + 0.15).min(4.0);
                         }
                         ui.label(RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(12.0));
-                        if icon_button(ui, Icon::ZoomOut, false, "Verkleinern").clicked() {
+                        if icon_button(ui, Icon::ZoomOut, false, tr("Verkleinern", "Zoom out")).clicked() {
                             self.zoom = (self.zoom - 0.15).max(0.25);
                         }
                     });
@@ -2565,9 +2576,10 @@ impl eframe::App for ZShotApp {
                         .map(|(a, _)| a.title())
                         .collect();
                     if !failed.is_empty() {
-                        self.set_status(format!(
-                            "Tastenkürzel belegt (anderes Programm?): {}",
-                            failed.join(", ")
+                        let failed = failed.join(", ");
+                        self.set_status(tr(
+                            format!("Tastenkürzel belegt (anderes Programm?): {}", failed),
+                            format!("Hotkey in use (another program?): {}", failed),
                         ));
                     }
                     self.hotkey_status = status;
