@@ -149,6 +149,8 @@ pub struct Settings {
     pub copy_to_clipboard: bool,
     /// `None` means the default `Bilder\Z-SHOT` folder.
     pub save_dir: Option<PathBuf>,
+    /// Ask GitHub once a day whether a newer version exists (see `update`).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -160,6 +162,7 @@ impl Default for Settings {
             after_capture: AfterCapture::OpenEditor,
             copy_to_clipboard: false,
             save_dir: None,
+            check_updates: true,
         }
     }
 }

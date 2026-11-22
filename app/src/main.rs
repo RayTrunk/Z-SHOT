@@ -11,6 +11,7 @@ mod icons;
 mod log;
 mod model;
 mod settings;
+mod update;
 mod window;
 
 use background::{BackgroundEvent, BgCommand};
@@ -396,6 +397,8 @@ struct ZShotApp {
     marked: HashSet<String>,
     /// Entries waiting for the user to confirm their deletion (ids).
     confirm_delete: Option<Vec<String>>,
+    /// Daily check for a newer release on GitHub; `None` in screenshot mode.
+    updater: Option<update::Checker>,
 }
 
 /// Off-screen start position, so eframe's forced first-frame show is never visible.
@@ -464,6 +467,11 @@ impl ZShotApp {
             }
         }
 
+        let updater = persist.then(|| {
+            let ctx = cc.egui_ctx.clone();
+            update::Checker::start(album_path.clone(), settings.check_updates, move || ctx.request_repaint())
+        });
+
         // Start in Background mode on normal Windows launch; Editor mode in --screenshot mode
         let initial_mode = if is_screenshot_mode || !cfg!(windows) {
             AppMode::Editor
@@ -518,7 +526,12 @@ impl ZShotApp {
             pending_full_capture: false,
             marked: HashSet::new(),
             confirm_delete: None,
+            updater,
         }
+    }
+
+    fn update_status(&self) -> update::Status {
+        self.updater.as_ref().map(|u| u.status()).unwrap_or(update::Status::Unknown)
     }
 
     /// The entries a "delete selection" acts on: the Ctrl+click picks, or else the
@@ -2050,8 +2063,7 @@ impl ZShotApp {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 let footer_h = 34.0;
                 egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - footer_h)
-                    .auto_shrink([false, false])
+                    .max_height(ui.available_height() - footer_h)                    .auto_shrink([false, false])
                     .show(ui, |ui| {
 
                 // --- Hotkeys -------------------------------------------------
@@ -2241,6 +2253,15 @@ impl ZShotApp {
                     }
                     self.autostart = settings::autostart_enabled();
                 }
+                if ui
+                    .checkbox(&mut self.settings.check_updates, tr("Täglich nach Updates suchen (fragt GitHub)", "Check for updates daily (asks GitHub)"))
+                    .changed()
+                {
+                    if let Some(u) = &self.updater {
+                        u.set_enabled(self.settings.check_updates);
+                    }
+                    self.save_settings();
+                }
 
                 ui.separator();
 
@@ -2269,6 +2290,44 @@ impl ZShotApp {
                     .weak()
                     .size(12.0),
                 );
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    let status = self.update_status();
+                    let checking = status == update::Status::Checking;
+                    if ui
+                        .add_enabled(!checking && self.updater.is_some(), egui::Button::new(tr("Nach Updates suchen", "Check for updates")))
+                        .clicked()
+                    {
+                        if let Some(u) = &self.updater {
+                            u.check_now();
+                        }
+                    }
+                    match status {
+                        update::Status::Unknown => {}
+                        update::Status::Checking => {
+                            ui.spinner();
+                            ui.label(tr("Prüfe …", "Checking …"));
+                        }
+                        update::Status::UpToDate => {
+                            ui.label(tr("Z-SHOT ist aktuell.", "Z-SHOT is up to date."));
+                        }
+                        update::Status::NoRelease => {
+                            ui.label(RichText::new(tr("Keine Veröffentlichung gefunden.", "No release found.")).weak());
+                        }
+                        update::Status::Available { version, url } => {
+                            ui.hyperlink_to(
+                                tr(format!("Version {version} herunterladen"), format!("Download version {version}")),
+                                url,
+                            );
+                        }
+                        update::Status::Failed(e) => {
+                            ui.label(
+                                RichText::new(tr(format!("Prüfung fehlgeschlagen: {e}"), format!("Check failed: {e}")))
+                                    .color(Color32::from_rgb(220, 38, 38)),
+                            );
+                        }
+                    }
+                });
                     });
 
                 ui.separator();
@@ -2335,6 +2394,26 @@ impl ZShotApp {
                         ui.label(RichText::new(format!("{:.0}%", self.zoom * 100.0)).size(12.0));
                         if icon_button(ui, Icon::ZoomOut, false, tr("Verkleinern", "Zoom out")).clicked() {
                             self.zoom = (self.zoom - 0.15).max(0.25);
+                        }
+
+                        if let update::Status::Available { version, url } = self.update_status() {
+                            ui.separator();
+                            let badge = egui::Button::new(
+                                RichText::new(tr(format!("Update {version} verfügbar"), format!("Update {version} available")))
+                                    .color(Color32::WHITE)
+                                    .size(12.0),
+                            )
+                            .fill(Color32::from_rgb(22, 163, 74));
+                            if ui
+                                .add(badge)
+                                .on_hover_text(tr(
+                                    format!("Installiert ist {}. Klicken öffnet die Download-Seite.", env!("CARGO_PKG_VERSION")),
+                                    format!("Installed: {}. Click to open the download page.", env!("CARGO_PKG_VERSION")),
+                                ))
+                                .clicked()
+                            {
+                                ctx.open_url(egui::OpenUrl::new_tab(url));
+                            }
                         }
                     });
                 });
