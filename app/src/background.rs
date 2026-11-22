@@ -26,6 +26,21 @@ pub enum BackgroundEvent {
     HotkeyRecorded(Option<Hotkey>),
 }
 
+impl BackgroundEvent {
+    /// Events the UI must handle even while its window is hidden; the background
+    /// thread wakes the window for them (see `window::wake`).
+    pub fn wakes_window(&self) -> bool {
+        matches!(
+            self,
+            Self::StartRegionCapture
+                | Self::StartFullCapture
+                | Self::ShowGui
+                | Self::OpenSettings
+                | Self::Quit
+        )
+    }
+}
+
 /// Commands sent from the egui app to the background thread.
 #[derive(Debug, Clone)]
 pub enum BgCommand {
@@ -37,13 +52,10 @@ pub enum BgCommand {
 }
 
 #[cfg(windows)]
-pub use win::{send_command, set_ui_window, start_background_listener};
+pub use win::{send_command, start_background_listener};
 
 #[cfg(not(windows))]
 pub fn start_background_listener(_tx: Sender<BackgroundEvent>, _ctx: eframe::egui::Context) {}
-
-#[cfg(not(windows))]
-pub fn set_ui_window(_hwnd: isize) {}
 
 #[cfg(not(windows))]
 pub fn send_command(_cmd: BgCommand) {}
@@ -74,8 +86,6 @@ mod win {
         PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW,
         TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, HHOOK, IDI_APPLICATION,
         CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
-        IsIconic, IsWindowVisible, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOSIZE,
-        SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
         KBDLLHOOKSTRUCT, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
         TPM_RETURNCMD, WH_KEYBOARD_LL, WM_APP, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
         WM_LBUTTONUP, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
@@ -94,41 +104,6 @@ mod win {
 
     /// Hidden message window of the background thread (0 until created).
     static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
-    /// The egui main window (0 until the app registered it).
-    static UI_HWND: AtomicIsize = AtomicIsize::new(0);
-
-    /// Registers the egui main window so the background thread can wake it up.
-    pub fn set_ui_window(hwnd: isize) {
-        UI_HWND.store(hwnd, Ordering::Release);
-    }
-
-    /// Windows sends no WM_PAINT to hidden or minimised windows, so eframe never runs
-    /// `update()` and our events would sit in the channel. Make the window "visible"
-    /// again, parked off-screen, so the next frame runs and handles the event.
-    fn wake_ui() {
-        let hwnd = UI_HWND.load(Ordering::Acquire) as HWND;
-        if hwnd.is_null() {
-            crate::log::log("Aufwecken nicht möglich: Fenster-Handle fehlt");
-            return;
-        }
-        unsafe {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                crate::log::log("Fenster war minimiert: wiederhergestellt");
-            } else if IsWindowVisible(hwnd) == 0 {
-                SetWindowPos(
-                    hwnd,
-                    null_mut(),
-                    -32000,
-                    -32000,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                );
-                crate::log::log("Fenster war versteckt: außerhalb des Bildschirms eingeblendet");
-            }
-        }
-    }
     /// Commands waiting to be processed by the background thread.
     static QUEUE: Mutex<Vec<BgCommand>> = Mutex::new(Vec::new());
 
@@ -163,17 +138,7 @@ mod win {
     }
 
     fn emit(ev: BackgroundEvent) {
-        let needs_ui = matches!(
-            ev,
-            BackgroundEvent::StartRegionCapture
-                | BackgroundEvent::StartFullCapture
-                | BackgroundEvent::ShowGui
-                | BackgroundEvent::OpenSettings
-                | BackgroundEvent::Quit
-        );
-        if needs_ui {
-            crate::log::log(format!("Ereignis: {ev:?}"));
-        }
+        let needs_ui = ev.wakes_window();
         STATE.with(|cell| {
             if let Some(st) = cell.borrow().as_ref() {
                 let _ = st.tx.send(ev);
@@ -181,7 +146,7 @@ mod win {
             }
         });
         if needs_ui {
-            wake_ui();
+            crate::window::wake();
         }
     }
 

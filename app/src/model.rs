@@ -1,7 +1,7 @@
 // Z-SHOT — Copyright (C) 2026 R. Trunk
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use eframe::egui::{Color32, Pos2, Rect, TextureHandle};
+use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle};
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -130,6 +130,12 @@ impl ShotItem {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
+    }
+
+    /// False while the image is still being decoded in the background after start-up
+    /// (see [`spawn_album_image_loader`]); `meta.width`/`meta.height` are valid anyway.
+    pub fn is_loaded(&self) -> bool {
+        self.image.width() > 0
     }
 
     pub fn push_annotation(&mut self, ann: Annotation) {
@@ -363,13 +369,19 @@ pub fn album_dir() -> PathBuf {
     }
 }
 
-pub fn save_album(dir: &Path, items: &[ShotItem]) -> Result<(), String> {
+/// Writes only `album.json`. The images are written where they change (capture, crop).
+pub fn save_album_index(dir: &Path, items: &[ShotItem]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let metas: Vec<&ShotMeta> = items.iter().map(|i| &i.meta).collect();
     let json = serde_json::to_string_pretty(&metas).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("album.json"), json).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("album.json"), json).map_err(|e| e.to_string())
+}
+
+/// Writes `album.json` plus every image that is not on disk yet.
+pub fn save_album(dir: &Path, items: &[ShotItem]) -> Result<(), String> {
+    save_album_index(dir, items)?;
     for item in items {
-        let png_path = dir.join(format!("{}.png", item.meta.id));
+        let png_path = item_image_path(dir, &item.meta.id);
         if !png_path.exists() {
             item.image.save(&png_path).map_err(|e| e.to_string())?;
         }
@@ -377,13 +389,15 @@ pub fn save_album(dir: &Path, items: &[ShotItem]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn save_item_image(dir: &Path, item: &ShotItem) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let png_path = dir.join(format!("{}.png", item.meta.id));
-    item.image.save(&png_path).map_err(|e| e.to_string())
+/// Where an album item's image lives.
+pub fn item_image_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.png"))
 }
 
-pub fn load_album(dir: &Path) -> Vec<ShotItem> {
+/// Reads `album.json` without decoding any image: decoding 60 screenshots blocked the
+/// start for 10 s in a debug build, and hotkeys pressed meanwhile went unanswered.
+/// The items start with an empty image; [`spawn_album_image_loader`] fills them in.
+pub fn load_album_index(dir: &Path) -> Vec<ShotItem> {
     let index_path = dir.join("album.json");
     let Ok(raw) = std::fs::read_to_string(index_path) else {
         return Vec::new();
@@ -391,18 +405,35 @@ pub fn load_album(dir: &Path) -> Vec<ShotItem> {
     let Ok(metas) = serde_json::from_str::<Vec<ShotMeta>>(&raw) else {
         return Vec::new();
     };
-    let mut items = Vec::new();
-    for meta in metas {
-        let png_path = dir.join(format!("{}.png", meta.id));
-        if let Ok(dyn_img) = image::open(&png_path) {
-            items.push(ShotItem {
-                meta,
-                image: dyn_img.to_rgba8(),
-                texture: None,
-                undo_stack: Vec::new(),
-                redo_stack: Vec::new(),
-            });
+    metas
+        .into_iter()
+        .filter(|meta| item_image_path(dir, &meta.id).exists())
+        .map(|meta| ShotItem {
+            meta,
+            image: RgbaImage::new(0, 0),
+            texture: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        })
+        .collect()
+}
+
+/// Decodes album images on a worker thread in the given order (newest first) and sends
+/// each one as soon as it is ready, `None` if it could not be read.
+pub fn spawn_album_image_loader(
+    dir: PathBuf,
+    ids: Vec<String>,
+    ctx: egui::Context,
+) -> std::sync::mpsc::Receiver<(String, Option<RgbaImage>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for id in ids {
+            let image = image::open(item_image_path(&dir, &id)).ok().map(|img| img.to_rgba8());
+            if tx.send((id, image)).is_err() {
+                return;
+            }
+            ctx.request_repaint();
         }
-    }
-    items
+    });
+    rx
 }

@@ -10,6 +10,7 @@ mod icons;
 mod log;
 mod model;
 mod settings;
+mod window;
 
 use background::{BackgroundEvent, BgCommand};
 use settings::{AfterCapture, HotkeyAction, Settings};
@@ -21,8 +22,8 @@ use eframe::egui::{
 use icons::{icon_button, icon_text_button, paint_icon, Icon};
 use image::RgbaImage;
 use model::{
-    album_dir, arr_to_color32, color32_to_arr, load_album, save_album, save_item_image,
-    Annotation, ShotItem, Tool,
+    album_dir, arr_to_color32, color32_to_arr, item_image_path, load_album_index, save_album,
+    save_album_index, spawn_album_image_loader, Annotation, ShotItem, Tool,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -324,6 +325,8 @@ struct ZShotApp {
     mode: AppMode,
     allow_exit: bool,
     bg_rx: Option<Receiver<BackgroundEvent>>,
+    /// Album images decoded in the background after start-up; `None` once all arrived.
+    album_rx: Option<Receiver<(String, Option<RgbaImage>)>>,
 
     // Fullscreen region selection overlay state
     overlay_capture_at: Option<Instant>,
@@ -382,16 +385,16 @@ struct ZShotApp {
     autostart: bool,
     /// The editor was visible when the capture started, so return to it afterwards.
     capture_from_editor: bool,
-    /// eframe force-shows the window after the first frame; we hide it again once.
-    startup_hidden: bool,
-    /// Where the editor window was before it was hidden or parked off-screen.
-    editor_pos: Option<Pos2>,
+    /// Where the editor window was (physical pixels) before it was hidden or parked.
+    editor_place: Option<window::Placement>,
     /// A full-screen capture (instead of region) waits for the editor to move away.
     pending_full_capture: bool,
 }
 
 /// Off-screen start position, so eframe's forced first-frame show is never visible.
-const OFFSCREEN_POS: [f32; 2] = [-32000.0, -32000.0];
+const OFFSCREEN_POS: [f32; 2] = [window::OFFSCREEN as f32, window::OFFSCREEN as f32];
+/// Default editor size (logical points).
+const EDITOR_SIZE: Vec2 = Vec2::new(1280.0, 800.0);
 
 impl ZShotApp {
     fn new(
@@ -402,11 +405,11 @@ impl ZShotApp {
         icons::install(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
 
-        // Let the background thread wake this window while it is hidden (see wake_ui).
+        // Let the background thread wake this window while it is hidden (window::wake).
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             match cc.window_handle().map(|h| h.as_raw()) {
-                Ok(RawWindowHandle::Win32(w)) => background::set_ui_window(w.hwnd.get()),
+                Ok(RawWindowHandle::Win32(w)) => window::set_ui_window(w.hwnd.get()),
                 other => log::log(format!("Kein Win32-Fenster-Handle: {other:?}")),
             }
         }
@@ -436,10 +439,14 @@ impl ZShotApp {
         };
 
         let mut items = if persist {
-            load_album(&album_path)
+            load_album_index(&album_path)
         } else {
             Vec::new()
         };
+        let album_rx = (!items.is_empty()).then(|| {
+            let ids = items.iter().map(|i| i.meta.id.clone()).collect();
+            spawn_album_image_loader(album_path.clone(), ids, cc.egui_ctx.clone())
+        });
 
         if items.is_empty() {
             items = create_demo_items();
@@ -459,6 +466,7 @@ impl ZShotApp {
             mode: initial_mode,
             allow_exit: is_screenshot_mode,
             bg_rx,
+            album_rx,
             overlay_capture_at: None,
             overlay_image: None,
             overlay_texture: None,
@@ -497,8 +505,7 @@ impl ZShotApp {
             hotkey_status: Vec::new(),
             autostart: settings::autostart_enabled(),
             capture_from_editor: false,
-            startup_hidden: initial_mode != AppMode::Background,
-            editor_pos: None,
+            editor_place: None,
             pending_full_capture: false,
         }
     }
@@ -520,81 +527,100 @@ impl ZShotApp {
         self.status_until = Some(Instant::now() + Duration::from_secs(4));
     }
 
+    /// Saves the album index. Images are written separately, off the UI thread,
+    /// where they change (capture, crop).
     fn persist_album(&self) {
         if self.persist {
-            let _ = save_album(&self.album_path, &self.items);
+            let _ = save_album_index(&self.album_path, &self.items);
         }
     }
 
     /// Remembers where the editor window is, so it reappears there later.
-    fn remember_editor_pos(&mut self, ctx: &egui::Context) {
+    fn remember_editor_place(&mut self) {
         if self.mode == AppMode::Editor {
-            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                if rect.min.x > -10000.0 && rect.min.y > -10000.0 {
-                    self.editor_pos = Some(rect.min);
-                }
+            if let Some(p) = window::placement() {
+                self.editor_place = Some(p);
             }
         }
     }
 
-    /// Moves the (still visible) window off-screen. Unlike hiding it, this keeps
-    /// eframe's frames running, which the delayed capture steps rely on.
-    fn park_offscreen(&mut self, ctx: &egui::Context) {
-        self.remember_editor_pos(ctx);
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
-            OFFSCREEN_POS[0],
-            OFFSCREEN_POS[1],
-        )));
-    }
-
-    fn hide_to_background(&mut self, ctx: &egui::Context) {
-        self.remember_editor_pos(ctx);
-        self.mode = AppMode::Background;
+    /// Leaves the region overlay: frame and normal z-order back (winit; these style
+    /// changes keep the window rect). The caller then parks or places the window.
+    fn leave_overlay(&mut self, ctx: &egui::Context) {
         self.overlay_image = None;
         self.overlay_texture = None;
         self.overlay_drag_start = None;
         self.overlay_drag_curr = None;
-        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+    }
+
+    /// Moves the editor out of the picture and captures a moment later, once it is
+    /// gone. The window stays visible (just off-screen), so frames keep running for
+    /// the delay; hiding it would stop them.
+    fn prepare_capture(&mut self, ctx: &egui::Context, full: bool) {
+        self.capture_from_editor = true;
+        self.remember_editor_place();
+        window::park_offscreen();
+        self.pending_full_capture = full;
+        self.mode = AppMode::PreparingOverlay;
+        self.overlay_capture_at = Some(Instant::now() + Duration::from_millis(180));
+        ctx.request_repaint_after(Duration::from_millis(60));
+    }
+
+    /// Hides the window (tray + hotkeys keep running). It is parked off-screen first,
+    /// so waking it later (window::wake) only needs to show it.
+    fn hide_to_background(&mut self, ctx: &egui::Context) {
+        self.remember_editor_place();
+        if self.mode == AppMode::RegionOverlay {
+            self.leave_overlay(ctx);
+        }
+        window::park_offscreen();
+        self.mode = AppMode::Background;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
+    /// Switches to the editor and puts the window back where it was (physical
+    /// pixels, so it lands right on monitors with different scaling), or centres it
+    /// on the primary monitor on the first show.
     fn show_editor_gui(&mut self, ctx: &egui::Context) {
-        self.mode = AppMode::Editor;
-        self.overlay_image = None;
-        self.overlay_texture = None;
-        self.overlay_drag_start = None;
-        self.overlay_drag_curr = None;
-        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
-        ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
-        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-        ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(1280.0, 800.0)));
-        // The window may be parked off-screen: put it back where the editor was,
-        // or centre it on the first show.
-        let pos = self.editor_pos.unwrap_or_else(|| {
-            let monitor = ctx
-                .input(|i| i.viewport().monitor_size)
-                .unwrap_or(Vec2::new(1920.0, 1080.0));
-            ((monitor - Vec2::new(1280.0, 840.0)) * 0.5).max(Vec2::ZERO).to_pos2()
-        });
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+        self.remember_editor_place();
+        // Visible first: winit re-applies its visibility flag on every style change,
+        // and right after a wake-up that flag may still say "hidden".
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        if self.mode == AppMode::RegionOverlay {
+            self.leave_overlay(ctx);
+        }
+        self.mode = AppMode::Editor;
+        let place = self.editor_place.unwrap_or_else(|| {
+            // The window is on (or parked next to) the primary monitor, so the
+            // current scale factor is the primary monitor's.
+            let ppp = ctx.pixels_per_point();
+            let (w, h) = ((EDITOR_SIZE.x * ppp) as i32, (EDITOR_SIZE.y * ppp) as i32);
+            let (pw, ph) = window::primary_size();
+            window::Placement {
+                x: ((pw - w) / 2).max(0),
+                y: ((ph - h) / 2 - 20).max(0),
+                w,
+                h,
+                maximized: false,
+            }
+        });
+        window::restore(&place);
+        if place.maximized {
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+        }
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.fit_requested = true;
     }
 
     fn begin_region_capture(&mut self, ctx: &egui::Context) {
-        let was_visible = self.mode != AppMode::Background;
-        self.capture_from_editor = was_visible;
-        if was_visible {
-            // Move the editor away so it doesn't appear in the captured desktop
-            self.park_offscreen(ctx);
-            self.pending_full_capture = false;
-            self.mode = AppMode::PreparingOverlay;
-            self.overlay_capture_at = Some(Instant::now() + Duration::from_millis(180));
-            ctx.request_repaint_after(Duration::from_millis(60));
+        if self.mode == AppMode::Editor {
+            self.prepare_capture(ctx, false);
         } else {
+            if self.mode == AppMode::Background {
+                self.capture_from_editor = false;
+            }
             self.enter_region_overlay(ctx);
         }
     }
@@ -614,13 +640,15 @@ impl ZShotApp {
         self.overlay_drag_curr = None;
         self.mode = AppMode::RegionOverlay;
 
-        // Fullscreen uses the window's current monitor; it is usually parked off-screen,
-        // so bring it onto the primary monitor first.
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
+        // A borderless, topmost window covering the primary monitor (which is what
+        // capture_primary_screen grabbed). Not winit's Fullscreen: that positions
+        // asynchronously and remembers whatever place the window had before, which
+        // put the overlay off-screen.
+        // Visible first: see show_editor_gui.
+        window::cover_primary();
+        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         ctx.request_repaint();
     }
@@ -653,13 +681,7 @@ impl ZShotApp {
 
     fn take_full_capture(&mut self, ctx: &egui::Context) {
         if self.mode == AppMode::Editor {
-            // Move the editor out of the picture first, capture a moment later.
-            self.capture_from_editor = true;
-            self.park_offscreen(ctx);
-            self.pending_full_capture = true;
-            self.mode = AppMode::PreparingOverlay;
-            self.overlay_capture_at = Some(Instant::now() + Duration::from_millis(180));
-            ctx.request_repaint_after(Duration::from_millis(60));
+            self.prepare_capture(ctx, true);
             return;
         }
         if self.mode == AppMode::Background {
@@ -683,31 +705,41 @@ impl ZShotApp {
         let title = format!("{} {}", kind, self.items.len() + 1);
         let item = ShotItem::new(id, title, String::new(), img);
         if self.persist {
-            let _ = save_item_image(&self.album_path, &item);
+            let path = item_image_path(&self.album_path, &item.meta.id);
+            write_png_in_background(path, item.image.clone(), |_| {});
         }
 
         let after = self.settings.after_capture;
         let mut status = format!("{kind} aufgenommen — bereit zum Bearbeiten");
         if after.saves() {
             let dir = self.settings.effective_save_dir();
-            let result = std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|()| {
-                    let path = settings::unique_capture_path(&dir, now);
-                    item.image.save(&path).map(|()| path).map_err(|e| e.to_string())
-                });
-            let (title, text) = match result {
+            let notify_success = !after.opens_editor() && !self.capture_from_editor;
+            match settings::reserve_capture_path(&dir, now) {
                 Ok(path) => {
                     status = format!("Gespeichert: {}", path.display());
-                    ("Screenshot gespeichert".to_string(), path.display().to_string())
+                    let shown = path.display().to_string();
+                    let reserved = path.clone();
+                    write_png_in_background(path, item.image.clone(), move |result| {
+                        let (title, text) = match result {
+                            Ok(()) if notify_success => ("Screenshot gespeichert", shown),
+                            Ok(()) => return,
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&reserved);
+                                ("Speichern fehlgeschlagen", format!("{shown} — {e}"))
+                            }
+                        };
+                        background::send_command(BgCommand::Notify { title: title.into(), text });
+                    });
                 }
                 Err(e) => {
                     status = format!("Speichern fehlgeschlagen: {e}");
-                    ("Speichern fehlgeschlagen".to_string(), format!("{} — {e}", dir.display()))
+                    if notify_success {
+                        background::send_command(BgCommand::Notify {
+                            title: "Speichern fehlgeschlagen".into(),
+                            text: format!("{} — {e}", dir.display()),
+                        });
+                    }
                 }
-            };
-            if !after.opens_editor() && !self.capture_from_editor {
-                background::send_command(BgCommand::Notify { title, text });
             }
         }
         if self.settings.copy_to_clipboard {
@@ -735,6 +767,10 @@ impl ZShotApp {
         let Some(item) = self.items.get(self.selected) else {
             return;
         };
+        if !item.is_loaded() {
+            self.set_status("Bild wird noch geladen …");
+            return;
+        }
         match copy_image_to_clipboard(&item.render_flattened()) {
             Ok(()) => self.set_status("In Zwischenablage kopiert"),
             Err(e) => self.set_status(format!("Zwischenablage-Fehler: {}", e)),
@@ -745,6 +781,10 @@ impl ZShotApp {
         let Some(item) = self.items.get(self.selected) else {
             return;
         };
+        if !item.is_loaded() {
+            self.set_status("Bild wird noch geladen …");
+            return;
+        }
         let default_name = format!(
             "{}.png",
             item.meta
@@ -770,8 +810,46 @@ impl ZShotApp {
         }
     }
 
+    /// Puts album images decoded by the start-up loader into their items. An image that
+    /// could not be read drops its item, as the synchronous load used to.
+    fn receive_album_images(&mut self) {
+        let Some(rx) = &self.album_rx else { return };
+        let mut received = Vec::new();
+        let finished = loop {
+            match rx.try_recv() {
+                Ok(msg) => received.push(msg),
+                Err(mpsc::TryRecvError::Empty) => break false,
+                Err(mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        if finished {
+            self.album_rx = None;
+        }
+        for (id, image) in received {
+            let Some(pos) = self.items.iter().position(|i| i.meta.id == id) else {
+                continue; // deleted meanwhile
+            };
+            match image {
+                Some(image) => {
+                    self.items[pos].image = image;
+                    self.items[pos].texture = None;
+                }
+                None => {
+                    log::log(&format!("Albumbild nicht lesbar, Eintrag entfernt: {id}"));
+                    self.items.remove(pos);
+                    if pos == self.selected {
+                        self.selected_annotation = None;
+                    }
+                    if pos < self.selected || self.selected >= self.items.len() {
+                        self.selected = self.selected.saturating_sub(1);
+                    }
+                }
+            }
+        }
+    }
+
     fn ensure_texture(ctx: &egui::Context, item: &mut ShotItem) {
-        if item.texture.is_none() {
+        if item.texture.is_none() && item.is_loaded() {
             let size = [item.image.width() as usize, item.image.height() as usize];
             let color_image = ColorImage::from_rgba_unmultiplied(size, item.image.as_raw());
             item.texture = Some(ctx.load_texture(
@@ -783,12 +861,17 @@ impl ZShotApp {
     }
 
     fn draw_region_overlay(&mut self, ctx: &egui::Context) {
-        // Esc or Right-click cancels back to background
+        // Esc or right-click cancels: back to the editor if the capture started
+        // there, otherwise back to the background.
         let cancel = ctx.input(|i| {
             i.key_pressed(egui::Key::Escape) || i.pointer.secondary_clicked()
         });
         if cancel {
-            self.hide_to_background(ctx);
+            if self.capture_from_editor {
+                self.show_editor_gui(ctx);
+            } else {
+                self.hide_to_background(ctx);
+            }
             return;
         }
 
@@ -1697,9 +1780,11 @@ impl ZShotApp {
                                             );
                                             if ok {
                                                 if self.persist {
-                                                    let _ = save_item_image(
-                                                        &self.album_path,
-                                                        &self.items[self.selected],
+                                                    let item = &self.items[self.selected];
+                                                    write_png_in_background(
+                                                        item_image_path(&self.album_path, &item.meta.id),
+                                                        item.image.clone(),
+                                                        |_| {},
                                                     );
                                                     self.persist_album();
                                                 }
@@ -2040,6 +2125,54 @@ impl ZShotApp {
     }
 }
 
+/// PNG writes started by [`write_png_in_background`] that have not finished yet.
+static PNG_WRITES_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// On exit: lets running PNG writes finish, so quitting right after a capture does
+/// not lose it (leaving the process would kill the writer threads).
+fn wait_for_png_writes(timeout: Duration) {
+    let started = Instant::now();
+    while PNG_WRITES_PENDING.load(std::sync::atomic::Ordering::Acquire) > 0 {
+        if started.elapsed() > timeout {
+            log::log("Beenden: PNG-Schreibvorgänge nach 10 s nicht fertig");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Encodes and writes a PNG on a worker thread, then calls `done` there. A screen-sized
+/// capture takes over a second to encode in a debug build, and the editor would stay
+/// frozen that long. The data goes to `<name>.png.tmp` first and is renamed over
+/// `path` at the end, so no one ever reads a half-written file.
+fn write_png_in_background(
+    path: PathBuf,
+    image: RgbaImage,
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) {
+    PNG_WRITES_PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    std::thread::spawn(move || {
+        // Decremented at the very end, also if `done` panics.
+        struct Pending;
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                PNG_WRITES_PENDING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        let _pending = Pending;
+        let tmp = path.with_extension("png.tmp");
+        let result = image
+            .save_with_format(&tmp, image::ImageFormat::Png)
+            .and_then(|()| std::fs::rename(&tmp, &path).map_err(image::ImageError::IoError))
+            .map_err(|e| e.to_string());
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            log::log(&format!("PNG schreiben fehlgeschlagen ({}): {result:?}", path.display()));
+        }
+        done(result);
+    });
+}
+
 fn copy_image_to_clipboard(img: &RgbaImage) -> Result<(), arboard::Error> {
     let img_data = arboard::ImageData {
         width: img.width() as usize,
@@ -2196,7 +2329,11 @@ impl eframe::App for ZShotApp {
             return;
         }
 
-        // Poll events from background tray / global hotkey thread
+        self.receive_album_images();
+
+        // Poll events from background tray / global hotkey thread. The token is taken
+        // before draining, see window::handled_token.
+        let wake_token = window::handled_token();
         let mut pending_events = Vec::new();
         if let Some(rx) = &self.bg_rx {
             while let Ok(ev) = rx.try_recv() {
@@ -2246,6 +2383,8 @@ impl eframe::App for ZShotApp {
             }
         }
 
+        window::mark_handled(wake_token);
+
         // Handle delayed overlay preparation (waiting for editor window to hide cleanly)
         if self.mode == AppMode::PreparingOverlay {
             if let Some(at) = self.overlay_capture_at {
@@ -2274,16 +2413,22 @@ impl eframe::App for ZShotApp {
             }
         }
 
+        window::set_want_hidden(self.mode == AppMode::Background);
         match self.mode {
             AppMode::Background => {
-                if !self.startup_hidden {
-                    // eframe shows the window after the first frame regardless of
-                    // `with_visible(false)`; it is off-screen, hide it again right away.
-                    self.startup_hidden = true;
-                    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                // In the background the window must end up hidden. It can be shown
+                // behind winit's back (window::wake; eframe also force-shows it after
+                // the first frame). Win32 hides it right now; Visible(false) keeps
+                // winit's own flag at "hidden" (a no-op if it already is). Both are
+                // needed: winit skips Visible(false) when its flag is stale, and with
+                // a stale "visible" flag it would re-show the window on its next
+                // style change.
+                // No polling: events wake the window via window::wake, which also
+                // re-hides it if it gets shown again after this frame.
+                if window::is_visible() {
+                    window::hide();
                 }
-                // Keep waking gently so background tray/hotkey events are processed immediately
-                ctx.request_repaint_after(Duration::from_millis(200));
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
                 return;
             }
             AppMode::PreparingOverlay => {
@@ -2394,5 +2539,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options,
         Box::new(move |cc| Ok(Box::new(ZShotApp::new(cc, screenshot_target, open_settings)))),
     )?;
+    wait_for_png_writes(Duration::from_secs(10));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_png_write_is_complete_after_waiting() {
+        let dir = std::env::temp_dir().join(format!("zshot-pngwrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        let image = RgbaImage::from_pixel(64, 32, image::Rgba([10, 20, 30, 255]));
+        write_png_in_background(path.clone(), image, |result| assert!(result.is_ok()));
+        wait_for_png_writes(Duration::from_secs(10));
+        let back = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(back.dimensions(), (64, 32));
+        assert!(!dir.join("shot.png.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

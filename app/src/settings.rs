@@ -291,6 +291,21 @@ pub fn unique_capture_path(dir: &Path, at: chrono::DateTime<chrono::Local>) -> P
         .expect("unbounded range always yields a free name")
 }
 
+/// Picks a free capture file name and creates the (empty) file right away, so a second
+/// capture within the same second can't pick the same name while the first one is
+/// still being written in the background.
+pub fn reserve_capture_path(dir: &Path, at: chrono::DateTime<chrono::Local>) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    loop {
+        let path = unique_capture_path(dir, at);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Autostart (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
 // ---------------------------------------------------------------------------
@@ -391,6 +406,17 @@ mod tests {
         assert_eq!(p2.file_name().unwrap(), "2026-11-21_09-00-00_2.png");
         std::fs::write(&p2, b"x").unwrap();
         assert_eq!(unique_capture_path(&dir, t).file_name().unwrap(), "2026-11-21_09-00-00_3.png");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reserved_paths_differ_within_the_same_second() {
+        let dir = std::env::temp_dir().join(format!("zshot-reserve-{}", std::process::id()));
+        let t = at(9, 30, 0);
+        let p1 = reserve_capture_path(&dir, t).unwrap();
+        let p2 = reserve_capture_path(&dir, t).unwrap();
+        assert_ne!(p1, p2);
+        assert!(p1.exists() && p2.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
