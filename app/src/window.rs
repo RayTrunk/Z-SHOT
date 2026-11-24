@@ -32,13 +32,14 @@ pub struct Placement {
 #[cfg(windows)]
 pub use imp::{
     cover_primary, handled_token, hide, is_visible, mark_handled, park_offscreen, placement,
-    primary_size, restore, set_ui_window, set_want_hidden, wake,
+    primary_size, restore, set_key_capture, set_ui_window, set_want_hidden, wake,
 };
 
 #[cfg(not(windows))]
 mod fallback {
     use super::Placement;
     pub fn set_ui_window(_hwnd: isize) {}
+    pub fn set_key_capture(_on: bool) {}
     pub fn wake() {}
     pub fn park_offscreen() {}
     pub fn is_visible() -> bool {
@@ -66,8 +67,18 @@ pub use fallback::*;
 mod imp {
     use super::{Placement, OFFSCREEN};
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use crate::settings::Hotkey;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+        VK_PROCESSKEY, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
+    };
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_CHAR, WM_DEADCHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSCHAR, WM_SYSDEADCHAR, WM_SYSKEYDOWN,
+        WM_SYSKEYUP,
+    };
     use windows_sys::Win32::Graphics::Gdi::{RedrawWindow, RDW_INTERNALPAINT, RDW_INVALIDATE};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, GetWindowPlacement, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
@@ -79,8 +90,95 @@ mod imp {
     /// The egui main window (0 until the app registered it).
     static UI_HWND: AtomicIsize = AtomicIsize::new(0);
 
+    /// Registers the egui window. Must be called on the UI thread (the window's own
+    /// thread), because it also installs the key-capture subclass there.
     pub fn set_ui_window(hwnd: isize) {
         UI_HWND.store(hwnd, Ordering::Release);
+        unsafe {
+            SetWindowSubclass(hwnd as HWND, Some(key_capture_proc), KEY_CAPTURE_SUBCLASS_ID, 0);
+        }
+    }
+
+    // --- Hotkey recording ------------------------------------------------------
+    //
+    // A new hotkey is recorded from the key messages of the Z-SHOT window itself, while
+    // it has focus: no system-wide keyboard hook. The global hotkeys are unregistered
+    // during recording, so even Print Screen arrives here (as WM_KEYUP).
+
+    const KEY_CAPTURE_SUBCLASS_ID: usize = 0x5A53;
+    /// The next non-modifier key pressed in the window is the new hotkey.
+    static KEY_CAPTURE: AtomicBool = AtomicBool::new(false);
+    /// Key that was just recorded: its remaining messages (key-up, WM_CHAR) are
+    /// swallowed so they don't reach egui as input.
+    static SWALLOW_VK: AtomicU32 = AtomicU32::new(0);
+
+    pub fn set_key_capture(on: bool) {
+        KEY_CAPTURE.store(on, Ordering::Release);
+    }
+
+    fn is_modifier(vk: u32) -> bool {
+        [
+            VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU,
+            VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN,
+        ]
+        .iter()
+        .any(|&m| m as u32 == vk)
+    }
+
+    /// Modifier state as of the message being processed (not a live keyboard poll).
+    fn modifier_down(vk: u16) -> bool {
+        unsafe { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 }
+    }
+
+    unsafe extern "system" fn key_capture_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        let vk = wparam as u32;
+        let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+        let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+        let is_char = matches!(msg, WM_CHAR | WM_SYSCHAR | WM_DEADCHAR | WM_SYSDEADCHAR);
+
+        if KEY_CAPTURE.load(Ordering::Acquire) {
+            // Print Screen only arrives as key-up.
+            let snapshot_up = is_up && vk == VK_SNAPSHOT as u32;
+            if (is_down || snapshot_up) && !is_modifier(vk) && vk != VK_PROCESSKEY as u32 {
+                KEY_CAPTURE.store(false, Ordering::Release);
+                let ctrl = modifier_down(VK_CONTROL);
+                let shift = modifier_down(VK_SHIFT);
+                let alt = modifier_down(VK_MENU);
+                let win = modifier_down(VK_LWIN) || modifier_down(VK_RWIN);
+                let recorded = if vk == VK_ESCAPE as u32 && !(ctrl || shift || alt || win) {
+                    None
+                } else {
+                    Some(Hotkey { ctrl, shift, alt, win, vk })
+                };
+                if !snapshot_up {
+                    SWALLOW_VK.store(vk, Ordering::Release);
+                }
+                crate::background::send_command(crate::background::BgCommand::FinishRecording(recorded));
+                return 0;
+            }
+            if is_char {
+                return 0;
+            }
+        }
+
+        let swallow = SWALLOW_VK.load(Ordering::Acquire);
+        if swallow != 0 {
+            if is_char {
+                return 0;
+            }
+            if is_up && vk == swallow {
+                SWALLOW_VK.store(0, Ordering::Release);
+                return 0;
+            }
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
     fn hwnd() -> Option<HWND> {

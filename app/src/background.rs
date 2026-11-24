@@ -45,9 +45,12 @@ impl BackgroundEvent {
 #[derive(Debug, Clone)]
 pub enum BgCommand {
     SetHotkeys(Vec<(HotkeyAction, Hotkey)>),
-    /// Unregister hotkeys and capture the next key combination system-wide.
+    /// Unregister hotkeys and let the Z-SHOT window capture the next key combination
+    /// pressed while it has focus (see `window::set_key_capture`).
     StartRecording,
     CancelRecording,
+    /// Sent by the Z-SHOT window when it captured a combination (`None` = Esc).
+    FinishRecording(Option<Hotkey>),
     Notify { title: String, text: String },
 }
 
@@ -72,23 +75,21 @@ mod win {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
-        MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-        VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
+        RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
     };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
         NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW,
-        PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowsHookExW,
-        TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, HHOOK, IDI_APPLICATION,
+        PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+        TrackPopupMenu, TranslateMessage, IDI_APPLICATION,
         CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON,
-        KBDLLHOOKSTRUCT, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-        TPM_RETURNCMD, WH_KEYBOARD_LL, WM_APP, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP,
-        WM_LBUTTONUP, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+        MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+        TPM_RETURNCMD, WM_APP, WM_DESTROY, WM_HOTKEY,
+        WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
     };
 
     const WM_TRAY: u32 = WM_APP + 1;
@@ -112,7 +113,8 @@ mod win {
         ctx: eframe::egui::Context,
         bindings: Vec<(HotkeyAction, Hotkey)>,
         registered: Vec<HotkeyAction>,
-        hook: HHOOK,
+        /// A new hotkey is being recorded; the global hotkeys are unregistered meanwhile.
+        recording: bool,
     }
 
     thread_local! {
@@ -252,66 +254,22 @@ mod win {
         results
     }
 
-    fn is_modifier(vk: u32) -> bool {
-        [
-            VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU,
-            VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN,
-        ]
-        .iter()
-        .any(|&m| m as u32 == vk)
-    }
-
-    fn key_down(vk: u16) -> bool {
-        unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
-    }
-
     /// Ends recording (if active), re-registers the hotkeys and reports both results.
     fn finish_recording(hwnd: HWND, recorded: Option<Hotkey>) {
+        crate::window::set_key_capture(false);
         let applied = STATE.with(|cell| {
             let mut guard = cell.borrow_mut();
             let st = guard.as_mut()?;
-            if st.hook.is_null() {
+            if !st.recording {
                 return None;
             }
-            unsafe {
-                UnhookWindowsHookEx(st.hook);
-            }
-            st.hook = null_mut();
+            st.recording = false;
             Some(register_all(hwnd, st))
         });
         if let Some(applied) = applied {
             emit(BackgroundEvent::HotkeyRecorded(recorded));
             emit(BackgroundEvent::HotkeysApplied(applied));
         }
-    }
-
-    /// Low-level keyboard hook, only installed while recording a new hotkey. It sees
-    /// every key system-wide (including Print Screen, which normal windows don't get
-    /// as WM_KEYDOWN) and swallows the recorded key so it doesn't reach other apps.
-    unsafe extern "system" fn record_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if code >= 0 {
-            let info = &*(lparam as *const KBDLLHOOKSTRUCT);
-            let vk = info.vkCode;
-            let msg = wparam as u32;
-            let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-            // Print Screen sometimes only arrives as key-up.
-            let is_snapshot_up = (msg == WM_KEYUP || msg == WM_SYSKEYUP) && vk == VK_SNAPSHOT as u32;
-            if (is_down || is_snapshot_up) && !is_modifier(vk) {
-                let hwnd = TRAY_HWND.load(Ordering::Acquire) as HWND;
-                let ctrl = key_down(VK_CONTROL);
-                let shift = key_down(VK_SHIFT);
-                let alt = key_down(VK_MENU);
-                let win = key_down(VK_LWIN) || key_down(VK_RWIN);
-                let recorded = if vk == VK_ESCAPE as u32 && !(ctrl || shift || alt || win) {
-                    None
-                } else {
-                    Some(Hotkey { ctrl, shift, alt, win, vk })
-                };
-                finish_recording(hwnd, recorded);
-                return 1;
-            }
-        }
-        CallNextHookEx(null_mut(), code, wparam, lparam)
     }
 
     fn process_queue(hwnd: HWND) {
@@ -326,10 +284,10 @@ mod win {
                         update_tray_tip(hwnd, &st.bindings);
                         // While recording, keep everything unregistered; the new
                         // bindings are registered once recording ends.
-                        if st.hook.is_null() {
-                            Some(register_all(hwnd, st))
-                        } else {
+                        if st.recording {
                             None
+                        } else {
+                            Some(register_all(hwnd, st))
                         }
                     });
                     if let Some(applied) = applied {
@@ -339,21 +297,18 @@ mod win {
                 BgCommand::StartRecording => {
                     STATE.with(|cell| {
                         if let Some(st) = cell.borrow_mut().as_mut() {
-                            if st.hook.is_null() {
+                            if !st.recording {
+                                // Unregistered first, so the combination (e.g. Print
+                                // Screen) reaches the Z-SHOT window as a normal key.
                                 unregister_all(hwnd, st);
-                                st.hook = unsafe {
-                                    SetWindowsHookExW(
-                                        WH_KEYBOARD_LL,
-                                        Some(record_hook),
-                                        GetModuleHandleW(std::ptr::null()),
-                                        0,
-                                    )
-                                };
+                                st.recording = true;
+                                crate::window::set_key_capture(true);
                             }
                         }
                     });
                 }
                 BgCommand::CancelRecording => finish_recording(hwnd, None),
+                BgCommand::FinishRecording(recorded) => finish_recording(hwnd, recorded),
                 BgCommand::Notify { title, text } => show_balloon(hwnd, &title, &text),
             }
         }
@@ -457,7 +412,7 @@ mod win {
                 ctx,
                 bindings: Vec::new(),
                 registered: Vec::new(),
-                hook: null_mut(),
+                recording: false,
             });
         });
 
@@ -532,10 +487,6 @@ mod win {
             TRAY_HWND.store(0, Ordering::Release);
             STATE.with(|cell| {
                 if let Some(st) = cell.borrow_mut().as_mut() {
-                    if !st.hook.is_null() {
-                        UnhookWindowsHookEx(st.hook);
-                        st.hook = null_mut();
-                    }
                     unregister_all(hwnd, st);
                 }
             });
