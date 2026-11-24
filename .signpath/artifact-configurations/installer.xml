@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "installer" (copy into the SignPath project, slug: installer).
+  Input: the workflow artifact "z-shot-setup-unsigned" (a ZIP with the Inno Setup exe).
+  The z-shot.exe inside the setup is signed beforehand with the "app" configuration;
+  SignPath cannot sign files inside an Inno Setup installer.
+  Product name and version come from VersionInfoProduct* in installer/z-shot.iss.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="Z-SHOT-Setup-${version}.exe" product-name="Z-SHOT" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

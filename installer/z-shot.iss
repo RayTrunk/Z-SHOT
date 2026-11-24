@@ -29,6 +29,11 @@ AppPublisher={#AppPublisher}
 AppCopyright=Copyright (C) 2026 R. Trunk
 VersionInfoVersion={#AppVersion}
 VersionInfoDescription={#AppName} Setup
+; Product name/version are checked by the SignPath artifact configuration.
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#AppVersion}
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoCompany={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -61,6 +66,10 @@ english.TaskAutostart=Start Z-SHOT automatically when Windows starts (runs in th
 german.TaskAutostart=Z-SHOT beim Windows-Start automatisch starten (läuft im Hintergrund)
 english.TaskGroupStart=Startup:
 german.TaskGroupStart=Start:
+english.TaskUpdateCheck=Check for new versions daily (asks GitHub, sends no personal data; can be changed later in the settings)
+german.TaskUpdateCheck=Täglich nach neuen Versionen suchen (fragt GitHub, überträgt keine persönlichen Daten; später in den Einstellungen änderbar)
+english.TaskGroupPrivacy=Privacy:
+german.TaskGroupPrivacy=Datenschutz:
 english.LaunchApp=Start Z-SHOT now
 german.LaunchApp=Z-SHOT jetzt starten
 english.KeepDataNote=Your screenshots in the album are kept.
@@ -68,6 +77,7 @@ german.KeepDataNote=Ihre Screenshots im Album bleiben erhalten.
 
 [Tasks]
 Name: "autostart"; Description: "{cm:TaskAutostart}"; GroupDescription: "{cm:TaskGroupStart}"
+Name: "updatecheck"; Description: "{cm:TaskUpdateCheck}"; GroupDescription: "{cm:TaskGroupPrivacy}"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -82,6 +92,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 [Registry]
 ; Written only when the task is chosen; on an update without it, the value is removed.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Z-SHOT"; ValueData: """{app}\{#AppExeName}"""; Tasks: autostart; Flags: uninsdeletevalue
+; Update-check choice; Z-SHOT copies it into its settings on the next start and
+; deletes the value (settings::take_installer_update_choice).
+Root: HKCU; Subkey: "Software\Z-SHOT"; Flags: uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Z-SHOT"; ValueType: dword; ValueName: "CheckUpdates"; ValueData: 1; Tasks: updatecheck; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Z-SHOT"; ValueType: dword; ValueName: "CheckUpdates"; ValueData: 0; Tasks: not updatecheck; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent

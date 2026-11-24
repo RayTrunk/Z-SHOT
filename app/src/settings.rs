@@ -374,6 +374,41 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
+/// The installer's "check for updates" choice: DWORD `CheckUpdates` under
+/// `HKCU\Software\Z-SHOT`. Read once and removed, so afterwards only the app's own
+/// setting counts (the user may change it in the settings window).
+#[cfg(windows)]
+pub fn take_installer_update_choice() -> Option<bool> {
+    use windows_sys::Win32::System::Registry::{
+        RegDeleteKeyValueW, RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+    };
+    let key = wide("Software\\Z-SHOT");
+    let val = wide("CheckUpdates");
+    let mut data: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    unsafe {
+        let status = RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            val.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            &mut data as *mut u32 as *mut _,
+            &mut size,
+        );
+        if status != 0 {
+            return None;
+        }
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr());
+    }
+    Some(data != 0)
+}
+
+#[cfg(not(windows))]
+pub fn take_installer_update_choice() -> Option<bool> {
+    None
+}
+
 #[cfg(not(windows))]
 pub fn autostart_enabled() -> bool {
     false

@@ -431,11 +431,18 @@ impl ZShotApp {
         let album_path = album_dir();
 
         let settings_path = album_path.join("settings.json");
-        let settings = if persist {
+        let mut settings = if persist {
             Settings::load(&settings_path)
         } else {
             Settings::default()
         };
+        // The installer asked whether to check for updates; its answer wins once.
+        if persist {
+            if let Some(check) = settings::take_installer_update_choice() {
+                settings.check_updates = check;
+                let _ = settings.save(&settings_path);
+            }
+        }
 
         // Start tray + global hotkeys first, before the (slow) album load, so the
         // hotkeys work right after launch.

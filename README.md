@@ -30,7 +30,13 @@ Die Setup-Datei ist nicht signiert. Windows SmartScreen zeigt deshalb beim erste
 
 ## Update-Prüfung
 
-Z-SHOT fragt kurz nach dem Start und danach höchstens einmal am Tag bei GitHub (`api.github.com`) nach, ob es eine neuere Version gibt. Wenn ja, erscheint unten rechts ein Hinweis mit Link zur Download-Seite. Es wird nichts automatisch heruntergeladen oder installiert, und außer der Anfrage selbst werden keine Daten übertragen. Die Prüfung lässt sich in den Einstellungen unter „Allgemein“ abschalten; unter „Über Z-SHOT“ kann man jederzeit von Hand prüfen.
+Z-SHOT fragt kurz nach dem Start und danach höchstens einmal am Tag bei GitHub (`api.github.com`) nach, ob es eine neuere Version gibt. Wenn ja, erscheint unten rechts ein Hinweis mit Link zur Download-Seite. Es wird nichts automatisch heruntergeladen oder installiert, und außer der Anfrage selbst werden keine Daten übertragen. Die Prüfung lässt sich schon im Installer und später in den Einstellungen unter „Allgemein“ abschalten; unter „Über Z-SHOT“ kann man jederzeit von Hand prüfen.
+
+## Datenschutz
+
+Z-SHOT arbeitet lokal. Screenshots, Album, Notizen und Einstellungen bleiben auf dem eigenen Rechner (`%LOCALAPPDATA%\Z-SHOT` und der gewählte Speicherordner) und werden nirgendwohin übertragen.
+
+Die einzige Verbindung ins Internet ist die oben beschriebene Update-Prüfung: eine HTTPS-Anfrage an `api.github.com` mit der Kennung `Z-SHOT/<Version>`. Dabei erfährt GitHub wie bei jedem Webseitenaufruf die IP-Adresse; dafür gilt die [Datenschutzerklärung von GitHub](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement). Der Installer fragt, ob die Prüfung aktiv sein soll; in den Einstellungen lässt sie sich jederzeit ändern.
 
 ## Bauen
 
@@ -69,6 +75,21 @@ Z-SHOT is a screenshot tool for Windows, written in Rust and egui. It runs in th
 
 **Update check:** shortly after start and then at most once a day, Z-SHOT asks GitHub (`api.github.com`) whether a newer version exists and shows a notice in the bottom right if so. Nothing is downloaded or installed automatically, and nothing is sent besides the request itself. You can turn it off in Settings → General, or check by hand under About Z-SHOT.
 
+**Privacy policy:** Z-SHOT works locally. Screenshots, album, notes and settings stay on your computer and are never transmitted. The only network connection is the update check described above: one HTTPS request to `api.github.com` with the user agent `Z-SHOT/<version>`, which, like any web request, reveals your IP address to GitHub ([GitHub privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)). The installer asks whether to enable it, and it can be changed in the settings at any time.
+
 **Build:** `cd app && cargo build --release` (needs Rust stable, MSVC). The installer is built with `installer\build.ps1` (needs Inno Setup 6 or 7).
 
 **License:** Copyright (C) 2026 R. Trunk. Free software under the [GNU General Public License v3 or later](LICENSE), with ABSOLUTELY NO WARRANTY. Icons: [Heroicons](https://heroicons.com), MIT license.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+- Releases are built from this repository by the GitHub Actions workflow [`release.yml`](.github/workflows/release.yml) on GitHub-hosted runners; only those builds are submitted for signing.
+- Every signing request is approved by hand.
+- Team roles:
+  - Committers and reviewers: [RayTrunk](https://github.com/RayTrunk)
+  - Approvers: [RayTrunk](https://github.com/RayTrunk)
+- Privacy policy: see [Datenschutz](#datenschutz) / *Privacy policy* above.
+
+Signed releases start with the first version built after SignPath approved the project; earlier releases (up to 0.9.1) are not signed.

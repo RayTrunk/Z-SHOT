@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "app" (copy into the SignPath project, slug: app).
+  Input: the workflow artifact "z-shot-exe-unsigned" (a ZIP with z-shot.exe).
+  Product name and version must match the VERSIONINFO written by app/build.rs.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="z-shot.exe" product-name="Z-SHOT" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

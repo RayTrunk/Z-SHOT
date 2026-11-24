@@ -1,0 +1,172 @@
+# Z-SHOT — Copyright (C) 2026 R. Trunk
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds Z-SHOT on a GitHub-hosted runner, has the exe and the setup signed by
+# SignPath (see SIGNING.md) and attaches the setup to a draft release.
+#
+#   git tag v0.9.2 && git push origin v0.9.2   -> build, sign, draft release v0.9.2
+#   Actions tab -> "Release" -> Run workflow    -> build (and sign) only, no release
+#
+# Signing runs only once the secret SIGNPATH_API_TOKEN and the variable
+# SIGNPATH_ORGANIZATION_ID exist; until then the workflow produces unsigned files.
+# SignPath requires a manual approval of every signing request, so the signing
+# steps wait (up to 6 hours) until it was approved on signpath.io.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the draft release
+  actions: read   # SignPath reads the uploaded workflow artifacts
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG || 'Z-SHOT' }}
+      SIGNPATH_POLICY_SLUG: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: version
+        run: |
+          $v = (Select-String -Path app/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME passt nicht zur Version $v in app/Cargo.toml"
+          }
+          $sign = [bool]($env:SIGNPATH_API_TOKEN -and $env:SIGNPATH_ORGANIZATION_ID)
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "sign=$($sign.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          "Z-SHOT $v, signieren: $sign"
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Build
+        working-directory: app
+        run: cargo build --release --locked
+
+      - name: Test
+        working-directory: app
+        run: cargo test --release --locked
+
+      # --- Sign the app exe (it is packed into the setup, so it is signed first) ---
+      - name: Upload unsigned exe
+        id: upload-exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: z-shot-exe-unsigned
+          path: app/target/release/z-shot.exe
+          if-no-files-found: error
+
+      - name: Sign exe (SignPath)
+        if: steps.version.outputs.sign == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 21600
+          output-artifact-directory: signed-exe
+          parameters: |
+            version: ${{ toJSON(steps.version.outputs.version) }}
+
+      - name: Use signed exe
+        if: steps.version.outputs.sign == 'true'
+        run: Copy-Item signed-exe/z-shot.exe app/target/release/z-shot.exe -Force
+
+      # --- Build and sign the setup ---------------------------------------------------
+      - name: Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build setup
+        run: ./installer/build.ps1 -SkipCargo
+
+      - name: Upload unsigned setup
+        id: upload-setup
+        uses: actions/upload-artifact@v7
+        with:
+          name: z-shot-setup-unsigned
+          path: installer/Output/Z-SHOT-Setup-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign setup (SignPath)
+        if: steps.version.outputs.sign == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 21600
+          output-artifact-directory: signed-setup
+          parameters: |
+            version: ${{ toJSON(steps.version.outputs.version) }}
+
+      - name: Use signed setup
+        if: steps.version.outputs.sign == 'true'
+        run: Copy-Item "signed-setup/Z-SHOT-Setup-${{ steps.version.outputs.version }}.exe" installer/Output/ -Force
+
+      - name: Check signatures
+        if: steps.version.outputs.sign == 'true'
+        run: |
+          foreach ($f in 'app/target/release/z-shot.exe', "installer/Output/Z-SHOT-Setup-${{ steps.version.outputs.version }}.exe") {
+            $s = Get-AuthenticodeSignature $f
+            "$f : $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne 'Valid') { throw "Signatur ungültig: $f" }
+          }
+
+      - name: Upload setup
+        uses: actions/upload-artifact@v7
+        with:
+          name: Z-SHOT-Setup-${{ steps.version.outputs.version }}
+          path: installer/Output/Z-SHOT-Setup-${{ steps.version.outputs.version }}.exe
+
+      # --- Draft release (published by hand after a check) -----------------------------
+      - name: Draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $file = "installer/Output/Z-SHOT-Setup-$v.exe"
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          $signed = '${{ steps.version.outputs.sign }}' -eq 'true'
+          $note = if ($signed) {
+            "Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)."
+          } else { "Diese Dateien sind nicht signiert. / These files are not signed." }
+          @"
+          _Änderungen hier eintragen. / Describe the changes here._
+
+          SHA-256 ``Z-SHOT-Setup-$v.exe``: ``$hash``
+
+          $note [Code signing policy](https://github.com/${{ github.repository }}#code-signing-policy)
+          "@ | Set-Content notes.md
+          gh release view "v$v" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "v$v" $file --clobber
+          } else {
+            gh release create "v$v" $file --draft --title "Z-SHOT $v" --notes-file notes.md
+          }
