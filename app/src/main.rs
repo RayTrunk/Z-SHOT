@@ -8,6 +8,8 @@ mod background;
 mod capture;
 mod i18n;
 mod icons;
+#[cfg(target_os = "linux")]
+mod linux;
 mod log;
 mod model;
 mod settings;
@@ -58,10 +60,20 @@ struct CliArgs {
     screenshot_path: Option<PathBuf>,
     self_test_path: Option<PathBuf>,
     open_settings: bool,
+    /// Linux: run as the background process only (autostart).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    background: bool,
+    /// Linux: `--capture region|full`, handed to the background process.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    capture: Option<String>,
+    /// Linux: `--ui region|full|show|settings`, the window process (started by the
+    /// background process).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    ui: Option<String>,
 }
 
 fn parse_args() -> CliArgs {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     let mut cli = CliArgs::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -71,6 +83,12 @@ fn parse_args() -> CliArgs {
                 }
             }
             "--settings" => cli.open_settings = true,
+            "--background" => cli.background = true,
+            "--capture" => {
+                let what = args.next_if(|a| !a.starts_with("--")).unwrap_or_else(|| "region".into());
+                cli.capture = Some(what);
+            }
+            "--ui" => cli.ui = args.next(),
             "--self-test" => {
                 if let Some(p) = args.next() {
                     cli.self_test_path = Some(PathBuf::from(p));
@@ -402,6 +420,7 @@ struct ZShotApp {
 }
 
 /// Off-screen start position, so eframe's forced first-frame show is never visible.
+#[cfg_attr(not(windows), allow(dead_code))]
 const OFFSCREEN_POS: [f32; 2] = [window::OFFSCREEN as f32, window::OFFSCREEN as f32];
 /// Default editor size (logical points).
 const EDITOR_SIZE: Vec2 = Vec2::new(1280.0, 800.0);
@@ -411,11 +430,13 @@ impl ZShotApp {
         cc: &eframe::CreationContext<'_>,
         screenshot_target: Option<PathBuf>,
         open_settings: bool,
+        start_event: Option<BackgroundEvent>,
     ) -> Self {
         icons::install(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
 
         // Let the background thread wake this window while it is hidden (window::wake).
+        #[cfg(windows)]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             match cc.window_handle().map(|h| h.as_raw()) {
@@ -448,6 +469,11 @@ impl ZShotApp {
         // hotkeys work right after launch.
         let bg_rx = if !is_screenshot_mode {
             let (tx, rx) = mpsc::channel();
+            // Linux: what this window process was started for (capture, show, …),
+            // handled in the first frame like any later command.
+            if let Some(ev) = start_event {
+                let _ = tx.send(ev);
+            }
             background::start_background_listener(tx, cc.egui_ctx.clone());
             background::send_command(BgCommand::SetHotkeys(settings.hotkey_bindings()));
             Some(rx)
@@ -479,8 +505,10 @@ impl ZShotApp {
             update::Checker::start(album_path.clone(), settings.check_updates, move || ctx.request_repaint())
         });
 
-        // Start in Background mode on normal Windows launch; Editor mode in --screenshot mode
-        let initial_mode = if is_screenshot_mode || !cfg!(windows) {
+        // Start in Background mode on normal Windows launch (and for a Linux window
+        // process, whose start command moves it on in the first frame); Editor mode
+        // in --screenshot mode.
+        let initial_mode = if is_screenshot_mode || !(cfg!(windows) || cfg!(target_os = "linux")) {
             AppMode::Editor
         } else {
             AppMode::Background
@@ -488,7 +516,9 @@ impl ZShotApp {
 
         Self {
             mode: initial_mode,
-            allow_exit: is_screenshot_mode,
+            // Linux: a window process ends when its window closes (the background
+            // process keeps running).
+            allow_exit: is_screenshot_mode || cfg!(target_os = "linux"),
             bg_rx,
             album_rx,
             overlay_capture_at: None,
@@ -648,6 +678,9 @@ impl ZShotApp {
             if let Err(e) = self.settings.save(&self.settings_path) {
                 self.set_status(tr(format!("Einstellungen nicht gespeichert: {e}"), format!("Settings not saved: {e}")));
             }
+            // The background process runs the update check, so it reads them again.
+            #[cfg(target_os = "linux")]
+            linux::ipc::send(linux::ipc::Socket::Daemon, &linux::ipc::Command::Reload);
         }
     }
 
@@ -686,12 +719,28 @@ impl ZShotApp {
         self.overlay_drag_curr = None;
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+        #[cfg(target_os = "linux")]
+        {
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(EDITOR_SIZE));
+        }
     }
 
     /// Moves the editor out of the picture and captures a moment later, once it is
     /// gone. The window stays visible (just off-screen), so frames keep running for
     /// the delay; hiding it would stop them.
+    ///
+    /// Linux: a window cannot leave the screen there. This process closes and a new
+    /// one takes the capture once the editor is gone (`linux::finish_ui_process`).
+    #[cfg_attr(target_os = "linux", allow(unreachable_code))]
     fn prepare_capture(&mut self, ctx: &egui::Context, full: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            use linux::ipc::Command;
+            linux::request_relaunch(if full { Command::Full } else { Command::Region });
+            self.close_window(ctx);
+            return;
+        }
         self.capture_from_editor = true;
         self.remember_editor_place();
         window::park_offscreen();
@@ -703,7 +752,15 @@ impl ZShotApp {
 
     /// Hides the window (tray + hotkeys keep running). It is parked off-screen first,
     /// so waking it later (window::wake) only needs to show it.
+    ///
+    /// Linux: the window process ends instead (see `linux`).
+    #[cfg_attr(target_os = "linux", allow(unreachable_code))]
     fn hide_to_background(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        {
+            self.close_window(ctx);
+            return;
+        }
         self.remember_editor_place();
         if self.mode == AppMode::RegionOverlay {
             self.leave_overlay(ctx);
@@ -758,9 +815,34 @@ impl ZShotApp {
         }
     }
 
+    /// Linux: ends this window process; the album is on disk already.
+    #[cfg(target_os = "linux")]
+    fn close_window(&mut self, ctx: &egui::Context) {
+        self.mode = AppMode::Background;
+        self.allow_exit = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+    }
+
+    /// Linux: the portal refused or is missing. Opens the editor with the reason
+    /// instead of showing a made-up picture.
+    #[cfg(target_os = "linux")]
+    fn capture_failed(&mut self, ctx: &egui::Context, err: String) {
+        background::send_command(BgCommand::Notify {
+            title: tr("Keine Aufnahme", "No capture").into(),
+            text: err.clone(),
+        });
+        // The window may have opened as the (borderless, fullscreen) overlay.
+        self.leave_overlay(ctx);
+        self.show_editor_gui(ctx);
+        self.set_status(err);
+    }
+
     fn enter_region_overlay(&mut self, ctx: &egui::Context) {
         let img = match capture::capture_primary_screen() {
             Ok(img) => img,
+            #[cfg(target_os = "linux")]
+            Err(e) => return self.capture_failed(ctx, e),
+            #[cfg(not(target_os = "linux"))]
             Err(_) => capture::generate_sample_capture(self.items.len()),
         };
         let size = [img.width() as usize, img.height() as usize];
@@ -779,6 +861,10 @@ impl ZShotApp {
         // put the overlay off-screen.
         // Visible first: see show_editor_gui.
         window::cover_primary();
+        // Linux/Wayland: windows cannot place themselves; fullscreen on the monitor
+        // the compositor picks (the overlay shows the whole desktop, scaled to fit).
+        #[cfg(target_os = "linux")]
+        ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
@@ -822,6 +908,9 @@ impl ZShotApp {
         }
         let img = match capture::capture_primary_screen() {
             Ok(img) => img,
+            #[cfg(target_os = "linux")]
+            Err(err) => return self.capture_failed(ctx, err),
+            #[cfg(not(target_os = "linux"))]
             Err(err) => {
                 self.set_status(tr(format!("Aufnahme-Hinweis: {}", err), format!("Capture notice: {}", err)));
                 capture::generate_sample_capture(self.items.len())
@@ -926,12 +1015,7 @@ impl ZShotApp {
         );
         let export_dir = self.settings.effective_save_dir();
         let _ = std::fs::create_dir_all(&export_dir);
-        if let Some(path) = rfd::FileDialog::new()
-            .set_directory(&export_dir)
-            .set_file_name(&default_name)
-            .add_filter(tr("PNG-Bild", "PNG image"), &["png"])
-            .save_file()
-        {
+        if let Some(path) = pick_save_png(&export_dir, &default_name) {
             let flat = item.render_flattened();
             match flat.save(&path) {
                 Ok(()) => {
@@ -1018,12 +1102,20 @@ impl ZShotApp {
                 ctx.set_cursor_icon(CursorIcon::Crosshair);
 
                 let painter = ui.painter_at(screen_rect);
+                // Where the frozen desktop is drawn: the whole window on Windows (it
+                // is the primary monitor); on Linux the portal may deliver several
+                // monitors in one picture, which is scaled to fit.
+                let image_rect = self
+                    .overlay_image
+                    .as_ref()
+                    .map(|img| fit_rect(screen_rect, img.width(), img.height()))
+                    .unwrap_or(screen_rect);
 
                 // Draw frozen desktop image
                 if let Some(tex) = &self.overlay_texture {
                     painter.image(
                         tex.id(),
-                        screen_rect,
+                        image_rect,
                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                         Color32::WHITE,
                     );
@@ -1046,22 +1138,22 @@ impl ZShotApp {
                     if let (Some(a), Some(b)) =
                         (self.overlay_drag_start.take(), self.overlay_drag_curr.take())
                     {
-                        let r = Rect::from_two_pos(a, b).intersect(screen_rect);
+                        let r = Rect::from_two_pos(a, b).intersect(image_rect);
                         if r.width() >= 8.0 && r.height() >= 8.0 {
-                            finish_sel = Some((screen_rect, r));
+                            finish_sel = Some((image_rect, r));
                         }
                     }
                 }
 
                 // Draw bright cutout + border + dimensions badge for active selection
                 if let (Some(a), Some(b)) = (self.overlay_drag_start, self.overlay_drag_curr) {
-                    let sel = Rect::from_two_pos(a, b).intersect(screen_rect);
+                    let sel = Rect::from_two_pos(a, b).intersect(image_rect);
                     if sel.width() > 1.0 && sel.height() > 1.0 {
                         if let Some(tex) = &self.overlay_texture {
-                            let u0 = (sel.min.x - screen_rect.min.x) / screen_rect.width().max(1.0);
-                            let v0 = (sel.min.y - screen_rect.min.y) / screen_rect.height().max(1.0);
-                            let u1 = (sel.max.x - screen_rect.min.x) / screen_rect.width().max(1.0);
-                            let v1 = (sel.max.y - screen_rect.min.y) / screen_rect.height().max(1.0);
+                            let u0 = (sel.min.x - image_rect.min.x) / image_rect.width().max(1.0);
+                            let v0 = (sel.min.y - image_rect.min.y) / image_rect.height().max(1.0);
+                            let u1 = (sel.max.x - image_rect.min.x) / image_rect.width().max(1.0);
+                            let v1 = (sel.max.y - image_rect.min.y) / image_rect.height().max(1.0);
                             painter.image(
                                 tex.id(),
                                 sel,
@@ -1079,9 +1171,9 @@ impl ZShotApp {
                         // Live pixel size badge
                         let (pw, ph) = if let Some(img) = &self.overlay_image {
                             (
-                                (sel.width() / screen_rect.width().max(1.0) * img.width() as f32)
+                                (sel.width() / image_rect.width().max(1.0) * img.width() as f32)
                                     .round() as u32,
-                                (sel.height() / screen_rect.height().max(1.0) * img.height() as f32)
+                                (sel.height() / image_rect.height().max(1.0) * img.height() as f32)
                                     .round() as u32,
                             )
                         } else {
@@ -2042,6 +2134,64 @@ impl ZShotApp {
             });
     }
 
+    /// Linux: the desktop owns global shortcuts (GlobalShortcuts portal). Z-SHOT
+    /// suggests its combinations; where the portal is missing, the user binds the
+    /// capture command in the desktop's keyboard settings.
+    #[cfg(target_os = "linux")]
+    fn draw_linux_shortcuts(&mut self, ui: &mut egui::Ui) {
+        use linux::ipc::{self, Command, Socket};
+        ui.label(RichText::new(tr("Tastenkürzel", "Hotkeys")).strong().size(15.0));
+        ui.label(
+            RichText::new(tr(
+                format!(
+                    "Unter Linux vergibt die Arbeitsumgebung die Tastenkürzel. Z-SHOT schlägt \
+                     {} vor; beim ersten Start fragt das System nach. Ändern lassen sie sich \
+                     in den Systemeinstellungen unter Tastatur.",
+                    self.settings.region_hotkeys_label()
+                ),
+                format!(
+                    "On Linux the desktop assigns the hotkeys. Z-SHOT suggests {}; the \
+                     system asks on first start. You can change them in the system \
+                     settings under Keyboard.",
+                    self.settings.region_hotkeys_label()
+                ),
+            ))
+            .weak()
+            .size(12.0),
+        );
+        if ui.button(tr("Tastenkürzel neu einrichten …", "Set up hotkeys again …")).clicked()
+            && !ipc::send(Socket::Daemon, &Command::Shortcuts)
+        {
+            self.set_status(tr("Z-SHOT läuft nicht im Hintergrund", "Z-SHOT is not running in the background"));
+        }
+        ui.label(
+            RichText::new(tr(
+                "Bietet die Arbeitsumgebung das nicht an, dort ein eigenes Tastenkürzel mit \
+                 diesem Befehl anlegen:",
+                "If your desktop does not offer this, add a custom shortcut there with \
+                 this command:",
+            ))
+            .weak()
+            .size(12.0),
+        );
+        let exe = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_exe().ok())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "z-shot".into());
+        egui::Grid::new("linux_shortcut_commands").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+            for (label, what) in [(tr("Bereich", "Region"), "region"), (tr("Vollbild", "Fullscreen"), "full")] {
+                let command = format!("\"{exe}\" --capture {what}");
+                ui.label(label);
+                ui.label(RichText::new(&command).monospace().size(12.0));
+                if ui.small_button(tr("Kopieren", "Copy")).clicked() {
+                    ui.ctx().copy_text(command);
+                }
+                ui.end_row();
+            }
+        });
+    }
+
     fn draw_settings_window(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             if self.recording.take().is_some() {
@@ -2073,119 +2223,124 @@ impl ZShotApp {
                     .max_height(ui.available_height() - footer_h)                    .auto_shrink([false, false])
                     .show(ui, |ui| {
 
-                // --- Hotkeys -------------------------------------------------
-                ui.label(RichText::new(tr("Tastenkürzel", "Hotkeys")).strong().size(15.0));
-                ui.label(
-                    RichText::new(tr(
-                        "Auf das Feld klicken und die gewünschte Taste oder Kombination drücken \
-                         (wird automatisch erkannt). Esc bricht ab.",
-                        "Click the field and press the key or combination you want \
-                         (detected automatically). Esc cancels.",
-                    ))
-                    .weak()
-                    .size(12.0),
-                );
-                egui::Grid::new("hotkey_grid")
-                    .num_columns(4)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        for action in HotkeyAction::ALL {
-                            ui.label(action.title());
+                #[cfg(target_os = "linux")]
+                self.draw_linux_shortcuts(ui);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // --- Hotkeys -------------------------------------------------
+                    ui.label(RichText::new(tr("Tastenkürzel", "Hotkeys")).strong().size(15.0));
+                    ui.label(
+                        RichText::new(tr(
+                            "Auf das Feld klicken und die gewünschte Taste oder Kombination drücken \
+                             (wird automatisch erkannt). Esc bricht ab.",
+                            "Click the field and press the key or combination you want \
+                             (detected automatically). Esc cancels.",
+                        ))
+                        .weak()
+                        .size(12.0),
+                    );
+                    egui::Grid::new("hotkey_grid")
+                        .num_columns(4)
+                        .spacing([10.0, 8.0])
+                        .show(ui, |ui| {
+                            for action in HotkeyAction::ALL {
+                                ui.label(action.title());
 
-                            let is_recording = self.recording == Some(action);
-                            let text = if is_recording {
-                                RichText::new(tr("Taste drücken …", "Press a key …")).color(Color32::from_rgb(245, 158, 11))
-                            } else {
-                                match self.settings.hotkey(action) {
-                                    Some(hk) => RichText::new(hk.label()).strong(),
-                                    None => RichText::new(tr("Nicht belegt", "Not set")).weak(),
-                                }
-                            };
-                            let border = if is_recording {
-                                Color32::from_rgb(245, 158, 11)
-                            } else {
-                                ui.visuals().widgets.inactive.fg_stroke.color.gamma_multiply(0.45)
-                            };
-                            let btn = egui::Button::new(text)
-                                .fill(ui.visuals().extreme_bg_color)
-                                .stroke(Stroke::new(1.0_f32, border))
-                                .min_size(Vec2::new(170.0, 26.0));
-                            let resp = ui.add(btn).on_hover_text(if is_recording {
-                                tr("Klicken zum Abbrechen", "Click to cancel")
-                            } else {
-                                tr("Klicken und neue Taste drücken", "Click and press a new key")
-                            });
-                            if resp.clicked() {
-                                if is_recording {
-                                    background::send_command(BgCommand::CancelRecording);
+                                let is_recording = self.recording == Some(action);
+                                let text = if is_recording {
+                                    RichText::new(tr("Taste drücken …", "Press a key …")).color(Color32::from_rgb(245, 158, 11))
                                 } else {
-                                    if self.recording.is_some() {
-                                        background::send_command(BgCommand::CancelRecording);
+                                    match self.settings.hotkey(action) {
+                                        Some(hk) => RichText::new(hk.label()).strong(),
+                                        None => RichText::new(tr("Nicht belegt", "Not set")).weak(),
                                     }
-                                    self.recording = Some(action);
-                                    background::send_command(BgCommand::StartRecording);
+                                };
+                                let border = if is_recording {
+                                    Color32::from_rgb(245, 158, 11)
+                                } else {
+                                    ui.visuals().widgets.inactive.fg_stroke.color.gamma_multiply(0.45)
+                                };
+                                let btn = egui::Button::new(text)
+                                    .fill(ui.visuals().extreme_bg_color)
+                                    .stroke(Stroke::new(1.0_f32, border))
+                                    .min_size(Vec2::new(170.0, 26.0));
+                                let resp = ui.add(btn).on_hover_text(if is_recording {
+                                    tr("Klicken zum Abbrechen", "Click to cancel")
+                                } else {
+                                    tr("Klicken und neue Taste drücken", "Click and press a new key")
+                                });
+                                if resp.clicked() {
+                                    if is_recording {
+                                        background::send_command(BgCommand::CancelRecording);
+                                    } else {
+                                        if self.recording.is_some() {
+                                            background::send_command(BgCommand::CancelRecording);
+                                        }
+                                        self.recording = Some(action);
+                                        background::send_command(BgCommand::StartRecording);
+                                    }
                                 }
-                            }
 
-                            let clear_enabled = self.settings.hotkey(action).is_some() && !is_recording;
-                            if ui
-                                .add_enabled(clear_enabled, egui::Button::new(tr("Entfernen", "Remove")))
-                                .clicked()
-                            {
-                                self.settings.set_hotkey(action, None);
-                                self.save_settings();
-                                self.apply_hotkeys();
-                            }
+                                let clear_enabled = self.settings.hotkey(action).is_some() && !is_recording;
+                                if ui
+                                    .add_enabled(clear_enabled, egui::Button::new(tr("Entfernen", "Remove")))
+                                    .clicked()
+                                {
+                                    self.settings.set_hotkey(action, None);
+                                    self.save_settings();
+                                    self.apply_hotkeys();
+                                }
 
-                            let status = self
-                                .hotkey_status
-                                .iter()
-                                .find(|(a, _)| *a == action)
-                                .map(|(_, ok)| *ok);
-                            match (self.settings.hotkey(action), status) {
-                                (Some(_), Some(true)) => {
-                                    ui.label(RichText::new(tr("aktiv", "active")).color(Color32::from_rgb(16, 185, 129)));
+                                let status = self
+                                    .hotkey_status
+                                    .iter()
+                                    .find(|(a, _)| *a == action)
+                                    .map(|(_, ok)| *ok);
+                                match (self.settings.hotkey(action), status) {
+                                    (Some(_), Some(true)) => {
+                                        ui.label(RichText::new(tr("aktiv", "active")).color(Color32::from_rgb(16, 185, 129)));
+                                    }
+                                    (Some(_), Some(false)) => {
+                                        ui.label(RichText::new(tr("belegt", "in use")).color(Color32::from_rgb(239, 68, 68)))
+                                            .on_hover_text(tr(
+                                                "Windows hat die Kombination abgelehnt — sie wird \
+                                                 vermutlich von einem anderen Programm verwendet.",
+                                                "Windows rejected the combination — it is \
+                                                 probably used by another program.",
+                                            ));
+                                    }
+                                    _ => {
+                                        ui.label("");
+                                    }
                                 }
-                                (Some(_), Some(false)) => {
-                                    ui.label(RichText::new(tr("belegt", "in use")).color(Color32::from_rgb(239, 68, 68)))
-                                        .on_hover_text(tr(
-                                            "Windows hat die Kombination abgelehnt — sie wird \
-                                             vermutlich von einem anderen Programm verwendet.",
-                                            "Windows rejected the combination — it is \
-                                             probably used by another program.",
-                                        ));
-                                }
-                                _ => {
-                                    ui.label("");
-                                }
+                                ui.end_row();
                             }
-                            ui.end_row();
-                        }
+                        });
+
+                    let print_used = HotkeyAction::ALL.into_iter().any(|a| {
+                        self.settings.hotkey(a).map(|h| h.vk) == Some(settings::VK_SNAPSHOT)
                     });
-
-                let print_used = HotkeyAction::ALL.into_iter().any(|a| {
-                    self.settings.hotkey(a).map(|h| h.vk) == Some(settings::VK_SNAPSHOT)
-                });
-                if print_used {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new(tr(
-                                "Öffnet die Druck-Taste stattdessen das Windows-Snipping-Tool? \
-                                 Dann in Windows unter Barrierefreiheit › Tastatur die Option \
-                                 „Druck-Taste zum Öffnen der Bildschirmaufnahme verwenden“ ausschalten.",
-                                "Does the Print key open the Windows Snipping Tool instead? \
-                                 Then turn off “Use the Print screen key to open screen capture” \
-                                 in Windows under Accessibility › Keyboard.",
-                            ))
-                            .weak()
-                            .size(12.0),
-                        );
-                        if ui.small_button(tr("Windows-Einstellung öffnen", "Open Windows setting")).clicked() {
-                            let _ = std::process::Command::new("explorer")
-                                .arg("ms-settings:easeofaccess-keyboard")
-                                .spawn();
-                        }
-                    });
+                    if print_used {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(tr(
+                                    "Öffnet die Druck-Taste stattdessen das Windows-Snipping-Tool? \
+                                     Dann in Windows unter Barrierefreiheit › Tastatur die Option \
+                                     „Druck-Taste zum Öffnen der Bildschirmaufnahme verwenden“ ausschalten.",
+                                    "Does the Print key open the Windows Snipping Tool instead? \
+                                     Then turn off “Use the Print screen key to open screen capture” \
+                                     in Windows under Accessibility › Keyboard.",
+                                ))
+                                .weak()
+                                .size(12.0),
+                            );
+                            if ui.small_button(tr("Windows-Einstellung öffnen", "Open Windows setting")).clicked() {
+                                let _ = std::process::Command::new("explorer")
+                                    .arg("ms-settings:easeofaccess-keyboard")
+                                    .spawn();
+                            }
+                        });
+                    }
                 }
 
                 ui.separator();
@@ -2230,17 +2385,20 @@ impl ZShotApp {
                 ui.horizontal(|ui| {
                     if ui.button(tr("Ändern …", "Change …")).clicked() {
                         let _ = std::fs::create_dir_all(&dir);
-                        if let Some(picked) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
+                        if let Some(picked) = pick_folder(&dir) {
                             self.settings.save_dir = Some(picked);
                         }
                     }
                     if ui.button(tr("Ordner öffnen", "Open folder")).clicked() {
                         let _ = std::fs::create_dir_all(&dir);
-                        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                        open_folder(&dir);
                     }
-                    if self.settings.save_dir.is_some()
-                        && ui.button(tr("Standard (Bilder\\Z-SHOT)", "Default (Pictures\\Z-SHOT)")).clicked()
-                    {
+                    let default_label = if cfg!(windows) {
+                        tr("Standard (Bilder\\Z-SHOT)", "Default (Pictures\\Z-SHOT)")
+                    } else {
+                        tr("Standard (Bilder/Z-SHOT)", "Default (Pictures/Z-SHOT)")
+                    };
+                    if self.settings.save_dir.is_some() && ui.button(default_label).clicked() {
                         self.settings.save_dir = None;
                     }
                 });
@@ -2254,7 +2412,12 @@ impl ZShotApp {
                 // --- General -------------------------------------------------
                 ui.label(RichText::new(tr("Allgemein", "General")).strong().size(15.0));
                 let mut autostart = self.autostart;
-                if ui.checkbox(&mut autostart, tr("Beim Windows-Start im Hintergrund starten", "Start in the background when Windows starts")).changed() {
+                let autostart_label = if cfg!(windows) {
+                    tr("Beim Windows-Start im Hintergrund starten", "Start in the background when Windows starts")
+                } else {
+                    tr("Bei der Anmeldung im Hintergrund starten", "Start in the background when you log in")
+                };
+                if ui.checkbox(&mut autostart, autostart_label).changed() {
                     if let Err(e) = settings::set_autostart(autostart) {
                         self.set_status(format!("Autostart: {e}"));
                     }
@@ -2433,6 +2596,26 @@ static PNG_WRITES_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 
 /// On exit: lets running PNG writes finish, so quitting right after a capture does
 /// not lose it (leaving the process would kill the writer threads).
+/// The largest rect with the image's aspect ratio, centred in `area`; `area` itself
+/// when the ratios match to within 1 % (Windows: the overlay shows the very monitor
+/// it covers, in physical pixels).
+fn fit_rect(area: Rect, width: u32, height: u32) -> Rect {
+    if width == 0 || height == 0 || area.width() <= 0.0 || area.height() <= 0.0 {
+        return area;
+    }
+    let image_aspect = width as f32 / height as f32;
+    let area_aspect = area.width() / area.height();
+    if (image_aspect / area_aspect - 1.0).abs() < 0.01 {
+        return area;
+    }
+    let size = if image_aspect > area_aspect {
+        Vec2::new(area.width(), area.width() / image_aspect)
+    } else {
+        Vec2::new(area.height() * image_aspect, area.height())
+    };
+    Rect::from_center_size(area.center(), size)
+}
+
 fn wait_for_png_writes(timeout: Duration) {
     let started = Instant::now();
     while PNG_WRITES_PENDING.load(std::sync::atomic::Ordering::Acquire) > 0 {
@@ -2476,13 +2659,75 @@ fn write_png_in_background(
     });
 }
 
-fn copy_image_to_clipboard(img: &RgbaImage) -> Result<(), arboard::Error> {
+fn copy_image_to_clipboard(img: &RgbaImage) -> Result<(), String> {
+    // Linux: clipboard content lives only as long as the process that set it, so the
+    // background process takes it over (this window process may end right away).
+    #[cfg(target_os = "linux")]
+    {
+        use linux::ipc::{self, Command, Socket};
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = ipc::runtime_dir().join(format!("clip-{}-{stamp}.png", std::process::id()));
+        if img.save(&path).is_ok() && ipc::send(Socket::Daemon, &Command::Clipboard(path.clone())) {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(&path);
+    }
     let img_data = arboard::ImageData {
         width: img.width() as usize,
         height: img.height() as usize,
         bytes: std::borrow::Cow::Borrowed(img.as_raw()),
     };
-    arboard::Clipboard::new().and_then(|mut cb| cb.set_image(img_data))
+    arboard::Clipboard::new()
+        .and_then(|mut cb| cb.set_image(img_data))
+        .map_err(|e| e.to_string())
+}
+
+/// Folder picker. Linux: the portal dialog, run on a runtime of our own (rfd's portal
+/// code needs tokio, which the UI thread does not have).
+fn pick_folder(start: &std::path::Path) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::block_on(rfd::AsyncFileDialog::new().set_directory(start).pick_folder())
+            .map(|h| h.path().to_path_buf())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        rfd::FileDialog::new().set_directory(start).pick_folder()
+    }
+}
+
+/// "Save as PNG" dialog, see [`pick_folder`].
+fn pick_save_png(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let filter = tr("PNG-Bild", "PNG image");
+    #[cfg(target_os = "linux")]
+    {
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_directory(dir)
+            .set_file_name(name)
+            .add_filter(filter, &["png"]);
+        linux::block_on(dialog.save_file()).map(|h| h.path().to_path_buf())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        rfd::FileDialog::new()
+            .set_directory(dir)
+            .set_file_name(name)
+            .add_filter(filter, &["png"])
+            .save_file()
+    }
+}
+
+/// Opens a folder in the file manager.
+fn open_folder(dir: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    linux::desktop::open_folder(dir);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
 }
 
 fn paint_annotation(
@@ -2645,6 +2890,12 @@ impl eframe::App for ZShotApp {
         }
         for ev in pending_events {
             log::log(format!("Verarbeitet (Modus {:?}): {ev:?}", self.mode));
+            // Linux: a new capture while the overlay is up would photograph the
+            // overlay itself (the portal sees every window).
+            let capture_event = matches!(ev, BackgroundEvent::StartRegionCapture | BackgroundEvent::StartFullCapture);
+            if cfg!(target_os = "linux") && capture_event && self.mode == AppMode::RegionOverlay {
+                continue;
+            }
             match ev {
                 BackgroundEvent::StartRegionCapture => self.begin_region_capture(ctx),
                 BackgroundEvent::StartFullCapture => self.take_full_capture(ctx),
@@ -2719,6 +2970,13 @@ impl eframe::App for ZShotApp {
 
         window::set_want_hidden(self.mode == AppMode::Background);
         match self.mode {
+            // Linux: nothing left to show (cancelled, or saved without the editor).
+            #[cfg(target_os = "linux")]
+            AppMode::Background => {
+                self.close_window(ctx);
+                return;
+            }
+            #[cfg(not(target_os = "linux"))]
             AppMode::Background => {
                 // In the background the window must end up hidden. It can be shown
                 // behind winit's back (window::wake; eframe also force-shows it after
@@ -2803,6 +3061,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let is_screenshot_mode = cli.screenshot_path.is_some();
+
+    // Linux: most calls only talk to (or become) the background process; a window
+    // process is started by it with `--ui`.
+    #[cfg(target_os = "linux")]
+    let start_event = if is_screenshot_mode {
+        None
+    } else {
+        match linux_entry(&cli)? {
+            Some(ev) => Some(ev),
+            None => return Ok(()),
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let start_event: Option<BackgroundEvent> = None;
+    #[cfg(target_os = "linux")]
+    let start_region = start_event == Some(BackgroundEvent::StartRegionCapture);
+
     if !is_screenshot_mode {
         log::log(format!("Z-SHOT {} gestartet", env!("CARGO_PKG_VERSION")));
     }
@@ -2832,6 +3107,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        // Wayland app id = desktop entry name, for the window icon and the portals.
+        viewport = viewport.with_app_id(linux::APP_ID);
+        if start_region {
+            // Open straight as the overlay, so no editor-sized window flashes up.
+            viewport = viewport.with_fullscreen(true).with_decorations(false);
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -2842,15 +3127,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "Z-SHOT",
         options,
-        Box::new(move |cc| Ok(Box::new(ZShotApp::new(cc, screenshot_target, open_settings)))),
+        Box::new(move |cc| Ok(Box::new(ZShotApp::new(cc, screenshot_target, open_settings, start_event)))),
     )?;
     wait_for_png_writes(Duration::from_secs(10));
+    #[cfg(target_os = "linux")]
+    if !is_screenshot_mode {
+        linux::finish_ui_process();
+    }
     Ok(())
+}
+
+/// Linux: decides what this call of `z-shot` is.
+///
+/// - `--ui <what>`: a window process (started by the background process). Returns
+///   the event to start with; a capture is taken right here, before any window.
+/// - `--background`: the background process (autostart).
+/// - `--capture region|full`: hands the capture to the background process, or
+///   becomes it.
+/// - no arguments (application menu): shows the window, through the background
+///   process, which is started if needed. `--settings` likewise.
+///
+/// `Ok(None)` means the work is done and the program ends.
+#[cfg(target_os = "linux")]
+fn linux_entry(cli: &CliArgs) -> Result<Option<BackgroundEvent>, Box<dyn std::error::Error>> {
+    use linux::ipc::{self, Command, Socket};
+
+    if let Some(what) = &cli.ui {
+        let cmd = match what.as_str() {
+            "region" => Command::Region,
+            "full" => Command::Full,
+            "settings" => Command::Settings,
+            _ => Command::Show,
+        };
+        // One window at a time: a second one hands its job to the open window.
+        if ipc::send(Socket::Ui, &cmd) {
+            return Ok(None);
+        }
+        if matches!(cmd, Command::Region | Command::Full) {
+            linux::portal::precapture();
+        }
+        return Ok(Some(match cmd {
+            Command::Region => BackgroundEvent::StartRegionCapture,
+            Command::Full => BackgroundEvent::StartFullCapture,
+            Command::Settings => BackgroundEvent::OpenSettings,
+            _ => BackgroundEvent::ShowGui,
+        }));
+    }
+
+    let initial = if cli.background {
+        None
+    } else if let Some(what) = &cli.capture {
+        Some(if what == "full" { Command::Full } else { Command::Region })
+    } else if cli.open_settings {
+        Some(Command::Settings)
+    } else {
+        Some(Command::Show)
+    };
+    if let Some(cmd) = &initial {
+        if ipc::send(Socket::Daemon, cmd) {
+            return Ok(None);
+        }
+    }
+    linux::daemon::run(initial)?;
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_image_keeps_its_aspect_ratio() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
+        // Same ratio (Windows: physical pixels of the covered monitor): whole area.
+        assert_eq!(fit_rect(area, 2560, 1440), area);
+        // Two monitors side by side: full width, centred vertically.
+        let r = fit_rect(area, 3840, 1080);
+        assert_eq!(r.width(), 1920.0);
+        assert_eq!(r.height(), 540.0);
+        assert_eq!(r.center(), area.center());
+        // Portrait picture: full height.
+        let r = fit_rect(area, 1080, 1920);
+        assert_eq!(r.height(), 1080.0);
+        assert!((r.width() - 607.5).abs() < 0.01);
+    }
 
     #[test]
     fn background_png_write_is_complete_after_waiting() {

@@ -1,8 +1,9 @@
 # Z-SHOT — Copyright (C) 2026 R. Trunk
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Builds Z-SHOT on a GitHub-hosted runner, has the exe and the setup signed by
-# SignPath (see SIGNING.md) and attaches the setup to a draft release.
+# Builds Z-SHOT on GitHub-hosted runners, has the Windows exe and setup signed by
+# SignPath (see SIGNING.md) and attaches the setup and the Linux archive to a draft
+# release.
 #
 #   git tag v0.9.2 && git push origin v0.9.2   -> build, sign, draft release v0.9.2
 #   Actions tab -> "Release" -> Run workflow    -> build (and sign) only, no release
@@ -170,3 +171,63 @@ jobs:
           } else {
             gh release create "v$v" $file --draft --title "Z-SHOT $v" --notes-file notes.md
           }
+
+  # --- Linux ------------------------------------------------------------------------
+  linux:
+    # An older Ubuntu on purpose: the binary links against its glibc and then also
+    # runs on Debian 12, Ubuntu 22.04 and newer.
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: version
+        run: |
+          v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' app/Cargo.toml | head -n1)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$v" ]; then
+            echo "Tag $GITHUB_REF_NAME passt nicht zur Version $v in app/Cargo.toml"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Build
+        working-directory: app
+        run: cargo build --release --locked
+
+      - name: Test
+        working-directory: app
+        run: cargo test --release --locked
+
+      - name: Package
+        run: |
+          d="z-shot-${{ steps.version.outputs.version }}-linux-x86_64"
+          mkdir "$d"
+          install -m755 app/target/release/z-shot "$d/"
+          cp LICENSE packaging/linux/LIESMICH.txt "$d/"
+          tar czf "$d.tar.gz" "$d"
+          sha256sum "$d.tar.gz" | tee "$d.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: z-shot-${{ steps.version.outputs.version }}-linux-x86_64
+          path: z-shot-*-linux-x86_64.tar.gz*
+          if-no-files-found: error
+
+  # Attaches the Linux archive to the draft release the Windows job created.
+  linux-release:
+    if: github.ref_type == 'tag'
+    needs: [build, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: z-shot-${{ needs.linux.outputs.version }}-linux-x86_64
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v${{ needs.linux.outputs.version }}" z-shot-*-linux-x86_64.tar.gz* --clobber --repo "${{ github.repository }}"

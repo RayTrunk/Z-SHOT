@@ -92,7 +92,14 @@ pub fn capture_primary_screen() -> Result<RgbaImage, String> {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: the whole desktop through the Screenshot portal, usually taken before the
+/// window opened (see `linux::portal::precapture`).
+#[cfg(target_os = "linux")]
+pub fn capture_primary_screen() -> Result<RgbaImage, String> {
+    crate::linux::portal::capture_screen()
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn capture_primary_screen() -> Result<RgbaImage, String> {
     Ok(generate_sample_capture(0))
 }

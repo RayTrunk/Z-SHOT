@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Z-SHOT
+GenericName=Screenshot Tool
+GenericName[de]=Screenshot-Werkzeug
+Comment=Capture a screen region, mark it up and keep it in an album
+Comment[de]=Bildschirmbereich aufnehmen, markieren und im Album sammeln
+Exec=z-shot
+Icon=io.github.raytrunk.ZShot
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=screenshot;capture;snip;Bildschirmfoto;
+StartupWMClass=io.github.raytrunk.ZShot
+Actions=region;full;
+
+[Desktop Action region]
+Name=Capture region
+Name[de]=Bereich aufnehmen
+Exec=z-shot --capture region
+
+[Desktop Action full]
+Name=Capture fullscreen
+Name[de]=Vollbild aufnehmen
+Exec=z-shot --capture full

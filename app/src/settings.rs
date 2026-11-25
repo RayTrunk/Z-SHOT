@@ -101,6 +101,7 @@ pub enum HotkeyAction {
     Full = 3,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl HotkeyAction {
     pub const ALL: [HotkeyAction; 3] =
         [HotkeyAction::Region, HotkeyAction::RegionAlt, HotkeyAction::Full];
@@ -264,11 +265,18 @@ fn pictures_dir() -> PathBuf {
     }
 }
 
-#[cfg(not(windows))]
+/// The XDG pictures folder (`~/Bilder`, `~/Pictures`, …).
+#[cfg(target_os = "linux")]
+fn pictures_dir() -> PathBuf {
+    crate::linux::desktop::pictures_dir()
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn pictures_dir() -> PathBuf {
     fallback_pictures_dir()
 }
 
+#[cfg(not(target_os = "linux"))]
 fn fallback_pictures_dir() -> PathBuf {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -409,14 +417,18 @@ pub fn take_installer_update_choice() -> Option<bool> {
     None
 }
 
-#[cfg(not(windows))]
+/// Linux: an entry in `~/.config/autostart` (inside Flatpak: the Background portal).
+#[cfg(target_os = "linux")]
+pub use crate::linux::desktop::{autostart_enabled, set_autostart};
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn autostart_enabled() -> bool {
     false
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_autostart(_enabled: bool) -> Result<(), String> {
-    Err(tr("Autostart wird nur unter Windows unterstützt", "Autostart is only supported on Windows").into())
+    Err(tr("Autostart wird hier nicht unterstützt", "Autostart is not supported here").into())
 }
 
 #[cfg(test)]

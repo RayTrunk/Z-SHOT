@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Z-SHOT — Copyright (C) 2026 R. Trunk -->
+<component type="desktop-application">
+  <id>io.github.raytrunk.ZShot</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Z-SHOT</name>
+  <summary>Capture a screen region, mark it up and keep it in an album</summary>
+  <summary xml:lang="de">Bildschirmbereich aufnehmen, markieren und im Album sammeln</summary>
+  <developer id="io.github.raytrunk">
+    <name>R. Trunk</name>
+  </developer>
+  <description>
+    <p>
+      Z-SHOT runs in the background. A hotkey or a click on the tray icon captures a
+      screen region, which then opens in an editor with arrow, rectangle, highlighter,
+      redaction, text, freehand and crop, or is saved right away.
+    </p>
+    <p xml:lang="de">
+      Z-SHOT läuft im Hintergrund. Ein Tastenkürzel oder ein Klick auf das Symbol im
+      Infobereich nimmt einen Bildschirmbereich auf. Er öffnet sich danach im Editor mit
+      Pfeil, Rechteck, Textmarker, Schwärzen, Text, Freihand und Zuschnitt, oder wird
+      direkt gespeichert.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.raytrunk.ZShot.desktop</launchable>
+  <url type="homepage">https://github.com/RayTrunk/Z-SHOT</url>
+  <url type="bugtracker">https://github.com/RayTrunk/Z-SHOT/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/RayTrunk/Z-SHOT/master/docs/screenshot-en.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+</component>

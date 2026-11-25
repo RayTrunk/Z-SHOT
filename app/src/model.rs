@@ -377,8 +377,14 @@ pub fn arr_to_color32(a: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(a[0], a[1], a[2], a[3])
 }
 
-/// Returns the local album directory (`%LOCALAPPDATA%\Z-SHOT` on Windows).
+/// Returns the local album directory (`%LOCALAPPDATA%\Z-SHOT` on Windows,
+/// `~/.local/share/z-shot` on Linux).
+#[cfg_attr(target_os = "linux", allow(unreachable_code))]
 pub fn album_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::linux::desktop::data_dir();
+    }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         PathBuf::from(local).join("Z-SHOT")
     } else if let Ok(home) = std::env::var("HOME") {

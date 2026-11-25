@@ -59,10 +59,16 @@ fn system_lang() -> Lang {
     from_langid(id)
 }
 
+/// POSIX: the first set of `LC_ALL`, `LC_MESSAGES`, `LANG` decides (in this order,
+/// as for message catalogues).
 #[cfg(not(windows))]
 fn system_lang() -> Lang {
-    let code = std::env::var("LANG").unwrap_or_default();
-    parse(&code).unwrap_or(Lang::En)
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|v| !v.is_empty())
+        .and_then(|v| parse(&v))
+        .unwrap_or(Lang::En)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]

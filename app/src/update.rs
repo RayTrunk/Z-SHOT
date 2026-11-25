@@ -309,9 +309,37 @@ fn http_get(host: &str, path: &str) -> Result<(u32, String), String> {
     }
 }
 
-#[cfg(not(windows))]
+// ---------------------------------------------------------------------------
+// Linux: HTTPS GET via ureq (rustls with the Mozilla root certificates)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn http_get(host: &str, path: &str) -> Result<(u32, String), String> {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .user_agent(concat!("Z-SHOT/", env!("CARGO_PKG_VERSION")))
+        .build();
+    let agent: ureq::Agent = config.into();
+    let mut response = agent
+        .get(&format!("https://{host}{path}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+        .map_err(|e| format!("Keine Verbindung zu GitHub ({e})"))?;
+    let code = u32::from(response.status().as_u16());
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(1 << 20)
+        .read_to_string()
+        .map_err(|e| format!("Lesen ({e})"))?;
+    Ok((code, body))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn http_get(_host: &str, _path: &str) -> Result<(u32, String), String> {
-    Err("nur unter Windows".into())
+    Err("nicht unterstützt".into())
 }
 
 #[cfg(test)]

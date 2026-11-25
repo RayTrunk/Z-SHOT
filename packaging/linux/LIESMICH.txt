@@ -1,0 +1,48 @@
+Z-SHOT für Linux
+================
+
+Installieren
+  Die Datei z-shot an einen festen Ort legen, z. B. ~/.local/bin, und einmal starten:
+
+    mkdir -p ~/.local/bin && cp z-shot ~/.local/bin/ && ~/.local/bin/z-shot
+
+  Beim ersten Start trägt sich Z-SHOT ins Anwendungsmenü ein und läuft danach im
+  Hintergrund. Für einen Bereich die Druck-Taste oder Strg+Umschalt+S drücken; beim
+  ersten Mal fragt die Arbeitsumgebung, ob Z-SHOT Tastenkürzel und Bildschirmfotos
+  verwenden darf.
+
+Voraussetzungen
+  - Eine Arbeitsumgebung mit xdg-desktop-portal (GNOME, KDE Plasma und andere aktuelle
+    Desktops; Wayland oder X11). Darüber laufen Bildschirmfotos, Tastenkürzel und
+    Dateidialoge.
+  - Symbol im Infobereich: unter KDE vorhanden, unter GNOME mit der Erweiterung
+    "AppIndicator and KStatusNotifierItem Support" (bei Ubuntu vorinstalliert).
+  - Bibliotheken, die jeder Desktop mitbringt: libEGL/libGL, libwayland-client,
+    libxkbcommon.
+
+Ohne Tastenkürzel-Portal
+  In den Tastatur-Einstellungen der Arbeitsumgebung ein eigenes Kürzel mit diesem
+  Befehl anlegen:
+
+    ~/.local/bin/z-shot --capture region
+
+Entfernen
+  Z-SHOT über das Symbol beenden, dann löschen:
+    ~/.local/bin/z-shot
+    ~/.local/share/applications/io.github.raytrunk.ZShot.desktop
+    ~/.local/share/icons/hicolor/256x256/apps/io.github.raytrunk.ZShot.png
+    ~/.config/autostart/io.github.raytrunk.ZShot.desktop (falls angelegt)
+  Album und Einstellungen liegen in ~/.local/share/z-shot.
+
+
+Z-SHOT for Linux
+================
+
+Copy z-shot to a fixed place such as ~/.local/bin and run it once. It adds itself to
+the application menu and keeps running in the background. Press Print or
+Ctrl+Shift+S for a region; the first time, your desktop asks whether Z-SHOT may use
+shortcuts and take screenshots. It needs xdg-desktop-portal (GNOME, KDE Plasma and
+other current desktops, Wayland or X11). Without the GlobalShortcuts portal, bind
+"z-shot --capture region" to a key in your desktop's keyboard settings.
+
+License: GNU GPL v3 or later, see LICENSE. ABSOLUTELY NO WARRANTY.

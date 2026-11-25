@@ -15,6 +15,7 @@
 
 /// Off-screen position (physical pixels) where the window waits while hidden or
 /// while it must keep receiving frames out of sight.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const OFFSCREEN: i32 = -32000;
 
 /// Where the editor window was, in physical screen pixels. For a maximised window,
@@ -35,7 +36,10 @@ pub use imp::{
     primary_size, restore, set_key_capture, set_ui_window, set_want_hidden, wake,
 };
 
+/// Other systems: the window is a normal window (Linux: the window process ends
+/// instead of hiding, see `linux`); some of these are only called on Windows paths.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 mod fallback {
     use super::Placement;
     pub fn set_ui_window(_hwnd: isize) {}

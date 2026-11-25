@@ -1,0 +1,51 @@
+# Z-SHOT — Copyright (C) 2026 R. Trunk
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Flatpak build of Z-SHOT. See packaging/flatpak/README.md for how to build it.
+# Screenshots, global shortcuts, file dialogs and autostart go through the desktop
+# portals, so the sandbox needs no access to the screen or the keyboard.
+
+id: io.github.raytrunk.ZShot
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: z-shot
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Daily update check against api.github.com (can be switched off in the app).
+  - --share=network
+  - --talk-name=org.freedesktop.Notifications
+  # Tray icon (StatusNotifierItem).
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # Default capture folder: Pictures/Z-SHOT.
+  - --filesystem=xdg-pictures
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/z-shot/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - name: z-shot
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --locked --manifest-path app/Cargo.toml
+      - install -Dm755 app/target/release/z-shot /app/bin/z-shot
+      - install -Dm644 packaging/flatpak/io.github.raytrunk.ZShot.desktop /app/share/applications/io.github.raytrunk.ZShot.desktop
+      - install -Dm644 packaging/flatpak/io.github.raytrunk.ZShot.metainfo.xml /app/share/metainfo/io.github.raytrunk.ZShot.metainfo.xml
+      - install -Dm644 app/assets/z-shot-icon.svg /app/share/icons/hicolor/scalable/apps/io.github.raytrunk.ZShot.svg
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - app/target
+          - installer/Output
+      # Generated with flatpak-cargo-generator from app/Cargo.lock (see README.md).
+      - cargo-sources.json

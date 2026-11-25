@@ -8,11 +8,13 @@
 //! [`BackgroundEvent`]s over an mpsc channel.
 
 use crate::settings::{Hotkey, HotkeyAction};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use std::sync::mpsc::Sender;
 
 /// Events sent from the background hotkey / system-tray thread to the egui app.
+/// (Hotkey registration and recording exist on Windows only.)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum BackgroundEvent {
     StartRegionCapture,
     StartFullCapture,
@@ -29,6 +31,7 @@ pub enum BackgroundEvent {
 impl BackgroundEvent {
     /// Events the UI must handle even while its window is hidden; the background
     /// thread wakes the window for them (see `window::wake`).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn wakes_window(&self) -> bool {
         matches!(
             self,
@@ -43,6 +46,7 @@ impl BackgroundEvent {
 
 /// Commands sent from the egui app to the background thread.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum BgCommand {
     SetHotkeys(Vec<(HotkeyAction, Hotkey)>),
     /// Unregister hotkeys and let the Z-SHOT window capture the next key combination
@@ -57,11 +61,55 @@ pub enum BgCommand {
 #[cfg(windows)]
 pub use win::{send_command, start_background_listener};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub use linux_ui::{send_command, start_background_listener};
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn start_background_listener(_tx: Sender<BackgroundEvent>, _ctx: eframe::egui::Context) {}
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn send_command(_cmd: BgCommand) {}
+
+/// Linux: tray and shortcuts live in the daemon process (`linux::daemon`); the
+/// window process only receives its commands over `ui.sock`.
+#[cfg(target_os = "linux")]
+mod linux_ui {
+    use super::{BackgroundEvent, BgCommand};
+    use crate::linux::ipc::{self, Command, ListenError, Socket};
+    use std::sync::mpsc::Sender;
+
+    pub fn start_background_listener(tx: Sender<BackgroundEvent>, ctx: eframe::egui::Context) {
+        let result = ipc::listen(Socket::Ui, move |cmd| {
+            let ev = match cmd {
+                Command::Region => BackgroundEvent::StartRegionCapture,
+                Command::Full => BackgroundEvent::StartFullCapture,
+                Command::Show => BackgroundEvent::ShowGui,
+                Command::Settings => BackgroundEvent::OpenSettings,
+                Command::Quit => BackgroundEvent::Quit,
+                _ => return,
+            };
+            let _ = tx.send(ev);
+            ctx.request_repaint();
+        });
+        match result {
+            Ok(()) => {}
+            Err(ListenError::AlreadyRunning) => crate::log::log("ui.sock: ein anderes Fenster läuft schon"),
+            Err(ListenError::Io(e)) => crate::log::log(format!("ui.sock: {e}")),
+        }
+    }
+
+    pub fn send_command(cmd: BgCommand) {
+        match cmd {
+            BgCommand::Notify { title, text } => crate::linux::desktop::notify(&title, &text),
+            // The desktop owns the shortcuts (GlobalShortcuts portal, registered by
+            // the daemon); recording a key in the window does not apply here.
+            BgCommand::SetHotkeys(_)
+            | BgCommand::StartRecording
+            | BgCommand::CancelRecording
+            | BgCommand::FinishRecording(_) => {}
+        }
+    }
+}
 
 #[cfg(windows)]
 mod win {

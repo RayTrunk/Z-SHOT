@@ -17,6 +17,17 @@ Die aktuelle Version gibt es unter **[Releases](https://github.com/RayTrunk/Z-SH
 
 Die Setup-Datei ist nicht signiert. Windows SmartScreen zeigt deshalb beim ersten Start eventuell eine Warnung („Weitere Informationen“ → „Trotzdem ausführen“).
 
+## Linux (Vorschau)
+
+Ab der nächsten Version gibt es Z-SHOT auch für Linux, als `z-shot-<Version>-linux-x86_64.tar.gz` unter Releases. Diese Version ist neu und auf echten Desktops noch wenig getestet.
+
+- Läuft unter Wayland und X11. Bildschirmfotos, Tastenkürzel und Dateidialoge gehen über die Desktop-Portale (`xdg-desktop-portal`), wie es Wayland verlangt. Beim ersten Mal fragt die Arbeitsumgebung nach der Erlaubnis.
+- Symbol im Infobereich unter KDE; unter GNOME mit der Erweiterung „AppIndicator and KStatusNotifierItem Support“.
+- Fehlt das Tastenkürzel-Portal, legt man in den Tastatur-Einstellungen ein eigenes Kürzel mit `z-shot --capture region` an.
+- Album und Einstellungen liegen in `~/.local/share/z-shot`, Screenshots standardmäßig in `Bilder/Z-SHOT`.
+
+Hinweise zur Installation stehen in [`packaging/linux/LIESMICH.txt`](packaging/linux/LIESMICH.txt). Ein Flatpak ist [vorbereitet](packaging/flatpak/).
+
 ## Funktionen
 
 - Bereichsauswahl per Tastenkürzel, Standard `Druck` und `Strg+Umschalt+S`, frei belegbar mit automatischer Tastenerkennung; optional ein Kürzel für Vollbild
@@ -34,7 +45,7 @@ Z-SHOT fragt kurz nach dem Start und danach höchstens einmal am Tag bei GitHub 
 
 ## Datenschutz
 
-Z-SHOT arbeitet lokal. Screenshots, Album, Notizen und Einstellungen bleiben auf dem eigenen Rechner (`%LOCALAPPDATA%\Z-SHOT` und der gewählte Speicherordner) und werden nirgendwohin übertragen.
+Z-SHOT arbeitet lokal. Screenshots, Album, Notizen und Einstellungen bleiben auf dem eigenen Rechner (`%LOCALAPPDATA%\Z-SHOT` bzw. unter Linux `~/.local/share/z-shot`, dazu der gewählte Speicherordner) und werden nirgendwohin übertragen.
 
 Die einzige Verbindung ins Internet ist die oben beschriebene Update-Prüfung: eine HTTPS-Anfrage an `api.github.com` mit der Kennung `Z-SHOT/<Version>`. Dabei erfährt GitHub wie bei jedem Webseitenaufruf die IP-Adresse; dafür gilt die [Datenschutzerklärung von GitHub](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement). Der Installer fragt, ob die Prüfung aktiv sein soll; in den Einstellungen lässt sie sich jederzeit ändern.
 
@@ -70,6 +81,8 @@ Z-SHOT is a screenshot tool for Windows, written in Rust and egui. It runs in th
 ![Z-SHOT with editor and album](docs/screenshot-en.png)
 
 **Download:** get `Z-SHOT-Setup-<version>.exe` from **[Releases](https://github.com/RayTrunk/Z-SHOT/releases/latest)**. It installs without admin rights to `%LOCALAPPDATA%\Programs\Z-SHOT`, and you can choose there whether Z-SHOT starts with Windows. To update, install the new version over the old one; your album is kept, even when uninstalling. The setup is not code-signed, so Windows SmartScreen may warn on first launch ("More info" → "Run anyway").
+
+**Linux (preview):** from the next release on there is a Linux build, `z-shot-<version>-linux-x86_64.tar.gz` under Releases. It runs on Wayland and X11 and takes screenshots, shortcuts and file dialogs through the desktop portals (`xdg-desktop-portal`); the desktop asks for permission the first time. The tray icon needs KDE, or GNOME with the AppIndicator extension. Without the GlobalShortcuts portal, bind `z-shot --capture region` to a key in your desktop's keyboard settings. This build is new and has seen little testing on real desktops yet.
 
 **Features:** region capture with configurable hotkeys (default `Print` and `Ctrl+Shift+S`), optional fullscreen hotkey; open the editor, save directly or both, optionally also copy to the clipboard; editor with arrow, rectangle, highlighter, redaction, text, freehand and crop, with undo/redo; album with search, favourites, titles and notes; multiple monitors with different scaling; German and English UI, following the Windows display language.
 

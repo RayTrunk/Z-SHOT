@@ -13,10 +13,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
-rfd = "0.15"
+rfd = { version = "0.15", default-features = false }
 raw-window-handle = "0.6"
 egui_extras = { version = "0.31", default-features = false, features = ["svg"] }
 resvg = { version = "0.37", default-features = false }
+
+# Linux: Wayland and X11 windows; screenshots, global shortcuts, file dialogs and
+# notifications go through the desktop portals / D-Bus (all pure Rust, no GTK).
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+ksni = { version = "0.3", default-features = false, features = ["tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
